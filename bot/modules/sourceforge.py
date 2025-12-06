@@ -11,12 +11,10 @@ from bot.helper.telegram_helper.button_build import ButtonMaker
 
 # key -> final direct URL (mirror đã chọn)
 SF_URL_CACHE = {}
-# session_id -> {"project":..., "rel_path":...}
-SF_SESSION_CACHE = {}
 
 # Danh sách mirror với slug (dùng cho use_mirror)
 SF_MIRRORS = [
-    # Auto-select
+    # Auto-select (để SourceForge tự chọn)
     {"label": "🌍 Auto-select (SourceForge)", "slug": None},
 
     # US / North America (ưu tiên vì VPS US)
@@ -127,7 +125,7 @@ async def _ping_url(client: httpx.AsyncClient, url: str):
         return None
 
 
-async def build_sf_menu(project: str, rel_path: str, session_id: str):
+async def build_sf_menu(project: str, rel_path: str):
     """
     Ping tất cả mirror và build text + keyboard.
     Trả về (text, reply_markup)
@@ -177,9 +175,6 @@ async def build_sf_menu(project: str, rel_path: str, session_id: str):
         SF_URL_CACHE[key] = r["url"]
         btn.ibutton(label, f"sfmirror|{key}")
 
-    # Nút refresh
-    btn.ibutton("🔄 Refresh", f"sfrefresh|{session_id}")
-
     text = (
         f"📦 <b>File:</b> <code>{rel_path}</code>\n"
         "⚡ <b>Chọn server SourceForge để mirror (sắp xếp theo ping):</b>"
@@ -202,9 +197,6 @@ async def handle_sourceforge(url: str, message):
 
     LOGGER.info(f"[SF] SourceForge detected: project={project} rel_path={rel_path}")
 
-    session_id = uuid4().hex[:8]
-    SF_SESSION_CACHE[session_id] = {"project": project, "rel_path": rel_path}
-
     # Gửi placeholder trước cho user thấy bot đã nhận lệnh
     placeholder = await sendMessage(
         message,
@@ -213,11 +205,17 @@ async def handle_sourceforge(url: str, message):
     )
 
     try:
-        text, markup = await build_sf_menu(project, rel_path, session_id)
+        text, markup = await build_sf_menu(project, rel_path)
         await placeholder.edit_text(text, reply_markup=markup)
+        return True
     except Exception as e:
         LOGGER.error(f"[SF] Lỗi khi build/edit menu: {e}")
-        # Không gửi thêm message để khỏi spam
+        # Báo lỗi ngay trên chính message đó, rồi cho mirror_leech xử lý link như bình thường
+        try:
+            await placeholder.edit_text(
+                "❌ Lỗi khi lấy danh sách server SourceForge.\n"
+                "➡️ Sẽ mirror trực tiếp link gốc."
+            )
+        except Exception:
+            pass
         return False
-
-    return True

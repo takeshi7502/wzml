@@ -1,5 +1,9 @@
+import asyncio
+import time
 from uuid import uuid4
 from urllib.parse import urlparse
+
+import httpx
 
 from bot import LOGGER
 from bot.helper.telegram_helper.message_utils import sendMessage
@@ -8,10 +12,9 @@ from bot.helper.telegram_helper.button_build import ButtonMaker
 # key -> final direct URL (mirror đã chọn)
 SF_URL_CACHE = {}
 
-# Danh sách mirror SourceForge (ưu tiên US trước, rồi tới các khu vực khác)
-# Host pattern chuẩn: https://<host>/project/<project>/<rel_path>
+# Danh sách mirror SourceForge (mặc định khá đầy đủ, US nhiều nhất)
 SF_MIRRORS = [
-    # --- North America / US (ưu tiên vì VPS ở US) ---
+    # --- North America / US (VPS ở US nên group này thường nhanh) ---
     {"label": "🇺🇸 GigeNET (IL, US)", "host": "gigenet.dl.sourceforge.net"},
     {"label": "🇺🇸 Psychz (NY, US)", "host": "psychz.dl.sourceforge.net"},
     {"label": "🇺🇸 Cytranet (TX, US)", "host": "cytranet.dl.sourceforge.net"},
@@ -30,7 +33,6 @@ SF_MIRRORS = [
     {"label": "🇧🇬 AltusHost (BG)", "host": "altushost-sofia.dl.sourceforge.net"},
     {"label": "🇱🇻 DEAC (LV)", "host": "deac-riga.dl.sourceforge.net"},
     {"label": "🇷🇸 UNLIMITED.RS (RS)", "host": "unlimited.dl.sourceforge.net"},
-    {"label": "🇩🇪 Delska (Frankfurt, DE)", "host": "delsa-frankfurt.dl.sourceforge.net"},
 
     # --- Asia ---
     {"label": "🇭🇰 Zenlayer (HK)", "host": "zenlayer.dl.sourceforge.net"},
@@ -72,7 +74,7 @@ def _extract_project_and_relpath(url: str):
     # Dạng: /projects/<proj>/files/.../download
     if path.startswith("/projects/"):
         parts = path.split("/")
-        # ['', 'projects', proj, 'files', ... 'download?']
+        # ['', 'projects', proj, 'files', ... 'download']
         if len(parts) < 4:
             return None, None
 
@@ -108,6 +110,22 @@ def _extract_project_and_relpath(url: str):
     return None, None
 
 
+async def _measure_latency(client: httpx.AsyncClient, url: str) -> float | None:
+    """
+    Đo latency (ms) tới URL bằng HEAD.
+    Trả về None nếu lỗi / timeout.
+    """
+    start = time.monotonic()
+    try:
+        # follow_redirects=True để đi theo redirect (nếu có)
+        await client.head(url, follow_redirects=True)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        return elapsed_ms
+    except Exception as e:
+        LOGGER.warning(f"[SF] Ping mirror lỗi cho {url}: {e}")
+        return None
+
+
 async def handle_sourceforge(url: str, message):
     """
     Được gọi từ mirror_leech khi phát hiện link SourceForge.
@@ -116,9 +134,12 @@ async def handle_sourceforge(url: str, message):
       1. Tách project + rel_path từ link gốc.
       2. Với mỗi mirror trong SF_MIRRORS, build URL:
            https://<host>/project/<project>/<rel_path>
-      3. Gửi 1 message có inline buttons cho user chọn server.
-      4. Mỗi button callback dạng: sfmirror|<key>
-         Key dùng để tra URL thật trong SF_URL_CACHE.
+      3. Đo ping (latency) từng server (async, song song).
+      4. Lọc những mirror đo được ping, sort theo ping tăng dần.
+      5. Chỉ lấy TOP 10 mirror nhanh nhất.
+      6. Gửi 1 message có inline buttons cho user chọn server.
+         Mỗi button: "<label> (XXms)"
+         callback_data: sfmirror|<key>, key dùng để tra URL thật trong SF_URL_CACHE.
 
     Trả về:
       - True  -> đã xử lý (mirror_leech không mirror tiếp link gốc nữa)
@@ -131,19 +152,61 @@ async def handle_sourceforge(url: str, message):
 
     LOGGER.info(f"[SF] project={project} rel_path={rel_path}")
 
-    btn = ButtonMaker()
-
+    # Build URL cho từng mirror
+    mirror_entries = []
     for m in SF_MIRRORS:
         direct_url = f"https://{m['host']}/project/{project}/{rel_path}"
+        mirror_entries.append(
+            {
+                "label": m["label"],
+                "host": m["host"],
+                "url": direct_url,
+            }
+        )
+
+    # Đo ping song song
+    results = []
+    timeout = httpx.Timeout(5.0, connect=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        tasks = [
+            _measure_latency(client, m["url"])
+            for m in mirror_entries
+        ]
+        latencies = await asyncio.gather(*tasks)
+
+    for m, latency in zip(mirror_entries, latencies):
+        if latency is None:
+            continue
+        results.append(
+            {
+                "label": m["label"],
+                "url": m["url"],
+                "latency": latency,
+            }
+        )
+
+    # Nếu không mirror nào đo được thì thôi, cho mirror_leech xử lý link gốc bình thường
+    if not results:
+        LOGGER.warning("[SF] Không đo được ping mirror nào, fallback về mirror gốc.")
+        return False
+
+    # Sort theo ping tăng dần, lấy TOP 10
+    results.sort(key=lambda x: x["latency"])
+    top = results[:10]
+
+    btn = ButtonMaker()
+    for item in top:
+        ms = int(item["latency"])
+        text = f"{item['label']} ({ms}ms)"
         key = uuid4().hex[:8]
-        SF_URL_CACHE[key] = direct_url
-        btn.ibutton(m["label"], f"sfmirror|{key}")
+        SF_URL_CACHE[key] = item["url"]
+        btn.ibutton(text, f"sfmirror|{key}")
 
     text = (
         f"📦 <b>File:</b> <code>{rel_path}</code>\n"
-        "⚡ <b>Chọn server SourceForge để mirror:</b>"
+        "⚡ <b>Chọn server SourceForge (TOP 10 ping thấp nhất):</b>"
     )
 
-    # 2 cột cho gọn, giữ nguyên hành vi cũ
+    # 2 cột cho gọn
     await sendMessage(message, text, btn.build_menu(2))
     return True

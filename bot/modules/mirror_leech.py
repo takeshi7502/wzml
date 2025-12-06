@@ -705,25 +705,31 @@ bot.add_handler(
 
 async def sfmirror_cb(client, query):
     try:
+        # callback_data dạng: "sfmirror|<key>"
         _, key = query.data.split("|", 1)
 
         url = SF_URL_CACHE.get(key)
         if not url:
             return await query.answer("Mirror đã hết hạn!", show_alert=True)
 
+        # tắt vòng quay loading trên nút
         await query.answer()
 
+        # LẤY message gốc của user
         base_msg = query.message.reply_to_message or query.message
         fake_msg = base_msg
         fake_msg.text = f"/mirror {url}"
 
-        await _mirror_leech(client, fake_msg, sf_handled=True)
-        # hoặc skip_sf=True nếu code m đang dùng tên đó
-
+        # 👉 XOÁ message chọn server TRƯỚC cho đỡ trễ
         try:
             await query.message.delete()
         except Exception as e:
             LOGGER.error(f"[SF DELETE MESSAGE ERROR] {e}")
+
+        # RỒI mới gọi pipeline mirror (nặng)
+        await _mirror_leech(client, fake_msg, sf_handled=True)
+        # hoặc nếu code m đang dùng skip_sf:
+        # await _mirror_leech(client, fake_msg, skip_sf=True)
 
     except Exception as e:
         LOGGER.error(f"[SF CALLBACK ERROR] {e}")

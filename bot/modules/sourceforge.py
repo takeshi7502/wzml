@@ -128,6 +128,7 @@ async def _ping_url(client: httpx.AsyncClient, url: str):
 async def build_sf_menu(project: str, rel_path: str):
     """
     Ping tất cả mirror và build text + keyboard.
+    Chỉ hiển thị TOP 10 mirror nhanh nhất.
     Trả về (text, reply_markup)
     """
     base_url = f"https://downloads.sourceforge.net/project/{project}/{rel_path}"
@@ -167,6 +168,9 @@ async def build_sf_menu(project: str, rel_path: str):
         )
     )
 
+    # 👉 chỉ lấy TOP 10 server nhanh nhất
+    results = results[:10]
+
     btn = ButtonMaker()
     for r in results:
         ping_txt = "timeout" if r["ping"] is None else f"{r['ping']:.2f}s"
@@ -176,8 +180,8 @@ async def build_sf_menu(project: str, rel_path: str):
         btn.ibutton(label, f"sfmirror|{key}")
 
     text = (
-        f"📦 <b>File:</b> <code>{rel_path}</code>\n"
-        "⚡ <b>Chọn server SourceForge để mirror (sắp xếp theo ping):</b>"
+        f"<b>File:</b> <code>{rel_path}</code>\n"
+        "⚡ <b>Chọn server SourceForge để mirror:</b>"
     )
 
     return text, btn.build_menu(2)

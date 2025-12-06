@@ -11,7 +11,12 @@ from cloudscraper import create_scraper
 
 from urllib.parse import urlparse
 
-from .sourceforge import handle_sourceforge, SF_URL_CACHE
+from .sourceforge import (
+    handle_sourceforge,
+    SF_URL_CACHE,
+    SF_SESSION_CACHE,
+    build_sf_menu,
+)
 
 from bot import (
     bot,
@@ -740,5 +745,36 @@ async def sfmirror_cb(client, query):
         await sendMessage(query.message, f"❌ Lỗi mirror: {e}")
 
 
+async def sfrefresh_cb(client, query):
+    try:
+        # callback_data dạng: "sfrefresh|<session_id>"
+        _, session_id = query.data.split("|", 1)
+
+        session = SF_SESSION_CACHE.get(session_id)
+        if not session:
+            return await query.answer(
+                "Session đã hết hạn, gửi lại link SourceForge mới nhé.",
+                show_alert=True,
+            )
+
+        await query.answer("Đang refresh ping...", show_alert=False)
+
+        project = session["project"]
+        rel_path = session["rel_path"]
+
+        text, markup = await build_sf_menu(project, rel_path, session_id)
+
+        # EDIT chính message hiện tại, không tạo message mới
+        await query.message.edit_text(text, reply_markup=markup)
+
+    except Exception as e:
+        LOGGER.error(f"[SF REFRESH ERROR] {e}")
+        try:
+            await query.answer("Lỗi khi refresh ping server.", show_alert=True)
+        except Exception:
+            pass
+
+
 bot.add_handler(CallbackQueryHandler(wzmlxcb, filters=regex(r"^wzmlx")))
-bot.add_handler(CallbackQueryHandler(sfmirror_cb, filters=regex(r"^sfmirror")))
+bot.add_handler(CallbackQueryHandler(sfmirror_cb, filters=regex(r"^sfmirror")),
+                CallbackQueryHandler(sfrefresh_cb, filters=regex(r"^sfrefresh")))

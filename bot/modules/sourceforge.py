@@ -1,0 +1,212 @@
+import asyncio
+import time
+from uuid import uuid4
+from urllib.parse import urlparse
+
+import httpx
+
+from bot import LOGGER
+from bot.helper.telegram_helper.message_utils import sendMessage
+from bot.helper.telegram_helper.button_build import ButtonMaker
+
+# key -> final direct URL (mirror đã chọn)
+SF_URL_CACHE = {}
+
+# Danh sách mirror SourceForge (mặc định khá đầy đủ, US nhiều nhất)
+SF_MIRRORS = [
+    # --- North America / US (VPS ở US nên group này thường nhanh) ---
+    {"label": "🇺🇸 GigeNET (IL, US)", "host": "gigenet.dl.sourceforge.net"},
+    {"label": "🇺🇸 Psychz (NY, US)", "host": "psychz.dl.sourceforge.net"},
+    {"label": "🇺🇸 Cytranet (TX, US)", "host": "cytranet.dl.sourceforge.net"},
+    {"label": "🇺🇸 VersaWeb (NV, US)", "host": "versaweb.dl.sourceforge.net"},
+    {"label": "🇺🇸 PhoenixNAP (AZ, US)", "host": "phoenixnap.dl.sourceforge.net"},
+    {"label": "🇺🇸 Pilotfiber (NY, US)", "host": "pilotfiber.dl.sourceforge.net"},
+    {"label": "🇺🇸 NetActuate (NC, US)", "host": "netactuate.dl.sourceforge.net"},
+    {"label": "🇺🇸 Cfhcable (FL, US)", "host": "cfhcable.dl.sourceforge.net"},
+    {"label": "🇺🇸 SourceForge (US Auto)", "host": "downloads.sourceforge.net"},
+
+    # --- Europe ---
+    {"label": "🇩🇪 NetCologne (DE)", "host": "netcologne.dl.sourceforge.net"},
+    {"label": "🇫🇷 Free.fr (FR)", "host": "freefr.dl.sourceforge.net"},
+    {"label": "🇸🇪 AltusHost (SE)", "host": "altushost-swe.dl.sourceforge.net"},
+    {"label": "🇧🇬 NetIX (BG)", "host": "netix.dl.sourceforge.net"},
+    {"label": "🇧🇬 AltusHost (BG)", "host": "altushost-sofia.dl.sourceforge.net"},
+    {"label": "🇱🇻 DEAC (LV)", "host": "deac-riga.dl.sourceforge.net"},
+    {"label": "🇷🇸 UNLIMITED.RS (RS)", "host": "unlimited.dl.sourceforge.net"},
+
+    # --- Asia ---
+    {"label": "🇭🇰 Zenlayer (HK)", "host": "zenlayer.dl.sourceforge.net"},
+    {"label": "🇸🇬 OnboardCloud (SG)", "host": "onboardcloud.dl.sourceforge.net"},
+    {"label": "🇹🇼 TWDS (TW)", "host": "twds.dl.sourceforge.net"},
+    {"label": "🇮🇳 Web Werks (IN)", "host": "webwerks.dl.sourceforge.net"},
+    {"label": "🇮🇳 Excell Media (IN)", "host": "excellmedia.dl.sourceforge.net"},
+    {"label": "🇮🇳 Cyfuture (IN)", "host": "cyfuture.dl.sourceforge.net"},
+    {"label": "🇹🇼 NCHC (TW)", "host": "nchc.dl.sourceforge.net"},
+    {"label": "🇯🇵 JAIST (JP)", "host": "jaist.dl.sourceforge.net"},
+    {"label": "🇦🇿 YER (AZ)", "host": "yer.dl.sourceforge.net"},
+
+    # --- Africa / South America / Oceania ---
+    {"label": "🇰🇪 Liquid Telecom (KE)", "host": "liquidtelecom.dl.sourceforge.net"},
+    {"label": "🇰🇪 Icolo (KE)", "host": "icolo.dl.sourceforge.net"},
+    {"label": "🇦🇷 SiTSA (AR)", "host": "sitsa.dl.sourceforge.net"},
+    {"label": "🇧🇷 SinalBR (BR)", "host": "sinalbr.dl.sourceforge.net"},
+    {"label": "🇪🇨 Fly Life (EC)", "host": "flylife-ec.dl.sourceforge.net"},
+    {"label": "🇦🇺 IX Australia (AU)", "host": "ix.dl.sourceforge.net"},
+]
+
+
+def _extract_project_and_relpath(url: str):
+    """
+    Tách projectname và rel_path từ các dạng link SourceForge thường gặp.
+
+    Hỗ trợ:
+    - https://sourceforge.net/projects/<proj>/files/<path>/file.zip/download
+    - https://downloads.sourceforge.net/project/<proj>/<path>/file.zip
+    """
+    try:
+        p = urlparse(url)
+    except Exception as e:
+        LOGGER.error(f"[SF] urlparse lỗi cho {url}: {e}")
+        return None, None
+
+    path = p.path or ""
+
+    # Dạng: /projects/<proj>/files/.../download
+    if path.startswith("/projects/"):
+        parts = path.split("/")
+        # ['', 'projects', proj, 'files', ... 'download']
+        if len(parts) < 4:
+            return None, None
+
+        project = parts[2]
+
+        try:
+            files_idx = parts.index("files")
+        except ValueError:
+            return None, None
+
+        rel_parts = parts[files_idx + 1 :]
+        # Bỏ "download" ở cuối nếu có
+        if rel_parts and rel_parts[-1] == "download":
+            rel_parts = rel_parts[:-1]
+
+        if not rel_parts:
+            return None, None
+
+        rel_path = "/".join(rel_parts)
+        return project, rel_path
+
+    # Dạng: /project/<proj>/<path>/file.zip (downloads.sourceforge.net)
+    if path.startswith("/project/"):
+        parts = path.split("/")
+        # ['', 'project', proj, ...]
+        if len(parts) < 4:
+            return None, None
+        project = parts[2]
+        rel_parts = parts[3:]
+        rel_path = "/".join(rel_parts)
+        return project, rel_path
+
+    return None, None
+
+
+async def _measure_latency(client: httpx.AsyncClient, url: str) -> float | None:
+    """
+    Đo latency (ms) tới URL bằng HEAD.
+    Trả về None nếu lỗi / timeout.
+    """
+    start = time.monotonic()
+    try:
+        # follow_redirects=True để đi theo redirect (nếu có)
+        await client.head(url, follow_redirects=True)
+        elapsed_ms = (time.monotonic() - start) * 1000
+        return elapsed_ms
+    except Exception as e:
+        LOGGER.warning(f"[SF] Ping mirror lỗi cho {url}: {e}")
+        return None
+
+
+async def handle_sourceforge(url: str, message):
+    """
+    Được gọi từ mirror_leech khi phát hiện link SourceForge.
+
+    Flow:
+      1. Tách project + rel_path từ link gốc.
+      2. Với mỗi mirror trong SF_MIRRORS, build URL:
+           https://<host>/project/<project>/<rel_path>
+      3. Đo ping (latency) từng server (async, song song).
+      4. Lọc những mirror đo được ping, sort theo ping tăng dần.
+      5. Chỉ lấy TOP 10 mirror nhanh nhất.
+      6. Gửi 1 message có inline buttons cho user chọn server.
+         Mỗi button: "<label> (XXms)"
+         callback_data: sfmirror|<key>, key dùng để tra URL thật trong SF_URL_CACHE.
+
+    Trả về:
+      - True  -> đã xử lý (mirror_leech không mirror tiếp link gốc nữa)
+      - False -> không parse được, mirror_leech cứ xử lý như link thường.
+    """
+    project, rel_path = _extract_project_and_relpath(url)
+    if not project or not rel_path:
+        LOGGER.warning(f"[SF] Không parse được project/rel_path từ: {url}")
+        return False
+
+    LOGGER.info(f"[SF] project={project} rel_path={rel_path}")
+
+    # Build URL cho từng mirror
+    mirror_entries = []
+    for m in SF_MIRRORS:
+        direct_url = f"https://{m['host']}/project/{project}/{rel_path}"
+        mirror_entries.append(
+            {
+                "label": m["label"],
+                "host": m["host"],
+                "url": direct_url,
+            }
+        )
+
+    # Đo ping song song
+    results = []
+    timeout = httpx.Timeout(5.0, connect=5.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        tasks = [
+            _measure_latency(client, m["url"])
+            for m in mirror_entries
+        ]
+        latencies = await asyncio.gather(*tasks)
+
+    for m, latency in zip(mirror_entries, latencies):
+        if latency is None:
+            continue
+        results.append(
+            {
+                "label": m["label"],
+                "url": m["url"],
+                "latency": latency,
+            }
+        )
+
+    # Nếu không mirror nào đo được thì thôi, cho mirror_leech xử lý link gốc bình thường
+    if not results:
+        LOGGER.warning("[SF] Không đo được ping mirror nào, fallback về mirror gốc.")
+        return False
+
+    # Sort theo ping tăng dần, lấy TOP 10
+    results.sort(key=lambda x: x["latency"])
+    top = results[:10]
+
+    btn = ButtonMaker()
+    for item in top:
+        ms = int(item["latency"])
+        text = f"{item['label']} ({ms}ms)"
+        key = uuid4().hex[:8]
+        SF_URL_CACHE[key] = item["url"]
+        btn.ibutton(text, f"sfmirror|{key}")
+
+    text = (
+        f"📦 <b>File:</b> <code>{rel_path}</code>\n"
+        "⚡ <b>Chọn server SourceForge (TOP 10 ping thấp nhất):</b>"
+    )
+
+    # 2 cột cho gọn
+    await sendMessage(message, text, btn.build_menu(2))
+    return True

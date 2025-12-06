@@ -9,6 +9,10 @@ from aiofiles import open as aiopen
 from aiofiles.os import path as aiopath
 from cloudscraper import create_scraper
 
+from urllib.parse import urlparse
+
+from .sourceforge import handle_sourceforge, SF_URL_CACHE
+
 from bot import (
     bot,
     DOWNLOAD_DIR,
@@ -76,7 +80,7 @@ from bot.modules.gen_pyro_sess import get_decrypt_key
 
 @new_task
 async def _mirror_leech(
-    client, message, isQbit=False, isLeech=False, sameDir=None, bulk=[]
+    client, message, isQbit=False, isLeech=False, sameDir=None, bulk=[], sf_handled=False
 ):
     text = message.text.split("\n")
     input_list = text[0].split(" ")
@@ -130,6 +134,19 @@ async def _mirror_leech(
     multi = int(args["-i"]) if args["-i"].isdigit() else 0
 
     link = args["link"]
+
+    # SourceForge: nếu đây là link trang SourceForge gốc (host == "sourceforge.net")
+    # thì chuyển sang bước chọn server trước, chỉ làm 1 lần (sf_handled=False).
+    try:
+        parsed = urlparse(link)
+        host = parsed.netloc.lower()
+    except Exception:
+        host = ""
+    if (not sf_handled) and host == "sourceforge.net":
+        handled = await handle_sourceforge(link, message)
+        if handled:
+            return
+
     folder_name = args["-m"] or args["-sd"] or args["-samedir"]
     seed = args["-d"] or args["-seed"]
     join = args["-j"] or args["-join"]
@@ -210,7 +227,7 @@ async def _mirror_leech(
             chat_id=message.chat.id, message_ids=nextmsg.id
         )
         nextmsg.from_user = message.from_user
-        _mirror_leech(client, nextmsg, isQbit, isLeech, sameDir, bulk)
+        _mirror_leech(client, nextmsg, isQbit, isLeech, sameDir, bulk, sf_handled)
         return
 
     if len(bulk) != 0:
@@ -240,7 +257,7 @@ async def _mirror_leech(
             sameDir["tasks"].add(nextmsg.id)
         nextmsg.from_user = message.from_user
         await sleep(5)
-        _mirror_leech(client, nextmsg, isQbit, isLeech, sameDir, bulk)
+        _mirror_leech(client, nextmsg, isQbit, isLeech, sameDir, bulk, sf_handled)
 
     __run_multi()
 
@@ -684,4 +701,44 @@ bot.add_handler(
         & ~CustomFilters.blacklisted,
     )
 )
+
+
+async def sfmirror_cb(client, query):
+    try:
+        # callback_data dạng: "sfmirror|<key>"
+        _, key = query.data.split("|", 1)
+
+        url = SF_URL_CACHE.get(key)
+        if not url:
+            return await query.answer("Mirror đã hết hạn!", show_alert=True)
+
+        # Tắt animation loading
+        await query.answer()
+
+        # Dùng lại message gốc của user (reply_to_message),
+        # nếu vì lý do gì đó không có thì fallback về chính query.message
+        base_msg = query.message.reply_to_message or query.message
+
+        # Fake lại nội dung như user gõ /mirror <url>
+        fake_msg = base_msg
+        fake_msg.text = f"/mirror {url}"
+
+        # Gọi lại pipeline mirror như bình thường,
+        # sf_handled=True để không bị nhảy lại handle_sourceforge lần nữa
+        await _mirror_leech(client, fake_msg, sf_handled=True)
+        # Nếu bản của m dùng skip_sf thì đổi thành:
+        # await _mirror_leech(client, fake_msg, skip_sf=True)
+
+        # Xoá cái tin nhắn chọn server cho đỡ rác
+        try:
+            await query.message.delete()
+        except Exception as e:
+            LOGGER.error(f"[SF DELETE MESSAGE ERROR] {e}")
+
+    except Exception as e:
+        LOGGER.error(f"[SF CALLBACK ERROR] {e}")
+        await sendMessage(query.message, f"❌ Lỗi mirror: {e}")
+
+
 bot.add_handler(CallbackQueryHandler(wzmlxcb, filters=regex(r"^wzmlx")))
+bot.add_handler(CallbackQueryHandler(sfmirror_cb, filters=regex(r"^sfmirror")))

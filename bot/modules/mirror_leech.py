@@ -705,31 +705,21 @@ bot.add_handler(
 
 async def sfmirror_cb(client, query):
     try:
-        # callback_data dạng: "sfmirror|<key>"
         _, key = query.data.split("|", 1)
 
         url = SF_URL_CACHE.get(key)
         if not url:
             return await query.answer("Mirror đã hết hạn!", show_alert=True)
 
-        # Tắt animation loading
         await query.answer()
 
-        # Dùng lại message gốc của user (reply_to_message),
-        # nếu vì lý do gì đó không có thì fallback về chính query.message
         base_msg = query.message.reply_to_message or query.message
-
-        # Fake lại nội dung như user gõ /mirror <url>
         fake_msg = base_msg
         fake_msg.text = f"/mirror {url}"
 
-        # Gọi lại pipeline mirror như bình thường,
-        # sf_handled=True để không bị nhảy lại handle_sourceforge lần nữa
         await _mirror_leech(client, fake_msg, sf_handled=True)
-        # Nếu bản của m dùng skip_sf thì đổi thành:
-        # await _mirror_leech(client, fake_msg, skip_sf=True)
+        # hoặc skip_sf=True nếu code m đang dùng tên đó
 
-        # Xoá cái tin nhắn chọn server cho đỡ rác
         try:
             await query.message.delete()
         except Exception as e:

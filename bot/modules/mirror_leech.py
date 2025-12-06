@@ -706,34 +706,104 @@ bot.add_handler(
 async def sfmirror_cb(client, query):
     try:
         # callback_data dạng: "sfmirror|<key>"
-        _, key = query.data.split("|", 1)
+        data = query.data or ""
+        try:
+            _, key = data.split("|", 1)
+        except ValueError:
+            return await query.answer("Dữ liệu nút không hợp lệ.", show_alert=True)
 
-        url = SF_URL_CACHE.get(key)
-        if not url:
+        chosen_url = SF_URL_CACHE.get(key)
+        if not chosen_url:
             return await query.answer("Mirror đã hết hạn!", show_alert=True)
 
-        # tắt vòng quay loading trên nút
+        # Lấy message gốc của user (lệnh /m, /mirror,...)
+        base_msg = query.message.reply_to_message or query.message
+
+        # ===== 1. GIỚI HẠN QUYỀN: chỉ owner task + admin bot =====
+        user_id = query.from_user.id if query.from_user else None
+        task_owner_id = getattr(base_msg.from_user, "id", None)
+
+        allowed_admins = set()
+
+        # lấy OWNER_ID & SUDO_USERS nếu có
+        owner_val = globals().get("OWNER_ID")
+        sudo_val = globals().get("SUDO_USERS")
+
+        def add_ids(val):
+            if val is None:
+                return
+            if isinstance(val, int):
+                allowed_admins.add(val)
+            elif isinstance(val, (list, tuple, set)):
+                for x in val:
+                    try:
+                        allowed_admins.add(int(x))
+                    except Exception:
+                        continue
+            elif isinstance(val, str):
+                # chấp nhận dạng "123", "123 456", "123,456"
+                for part in val.replace(",", " ").split():
+                    try:
+                        allowed_admins.add(int(part))
+                    except Exception:
+                        continue
+
+        add_ids(owner_val)
+        add_ids(sudo_val)
+
+        if user_id is None or (user_id != task_owner_id and user_id not in allowed_admins):
+            return await query.answer(
+                "⚠️ Chỉ người tạo tác vụ hoặc admin bot mới được chọn server này.",
+                show_alert=False,
+            )
+
+        # tắt vòng tròn loading trên nút
         await query.answer()
 
-        # LẤY message gốc của user
-        base_msg = query.message.reply_to_message or query.message
-        fake_msg = base_msg
-        fake_msg.text = f"/mirror {url}"
+        # ===== 2. GIỮ NGUYÊN OPTION, CHỈ THAY URL =====
+        orig_text = (base_msg.text or "").strip()
+        if not orig_text:
+            # fallback: không có text thì coi như /m <url>
+            new_text = f"/m {chosen_url}"
+        else:
+            # /m <old_url> <options...>
+            parts = orig_text.split(maxsplit=2)
+            cmd = parts[0]  # /m, /mirror, /leech,...
 
-        # 👉 XOÁ message chọn server TRƯỚC cho đỡ trễ
+            if len(parts) == 1:
+                # chỉ có lệnh, không có url/option
+                new_text = f"{cmd} {chosen_url}"
+            elif len(parts) == 2:
+                # /m <old_url>
+                new_text = f"{cmd} {chosen_url}"
+            else:
+                # /m <old_url> <options...>  → giữ nguyên options
+                options_part = parts[2]
+                new_text = f"{cmd} {chosen_url} {options_part}"
+
+        fake_msg = base_msg
+        fake_msg.text = new_text
+
+        # ===== 3. XÓA TIN CHỌN SERVER TRƯỚC CHO ĐỠ TRỄ =====
         try:
             await query.message.delete()
         except Exception as e:
             LOGGER.error(f"[SF DELETE MESSAGE ERROR] {e}")
 
-        # RỒI mới gọi pipeline mirror (nặng)
-        await _mirror_leech(client, fake_msg, sf_handled=True)
-        # hoặc nếu code m đang dùng skip_sf:
-        # await _mirror_leech(client, fake_msg, skip_sf=True)
+        # ===== 4. GỌI LẠI PIPELINE MIRROR BÌNH THƯỜNG =====
+        try:
+            # bản mới có sf_handled=True để không detect SF lần nữa
+            await _mirror_leech(client, fake_msg, sf_handled=True)
+        except TypeError:
+            # nếu bản của m chưa có tham số sf_handled thì fallback
+            await _mirror_leech(client, fake_msg)
 
     except Exception as e:
         LOGGER.error(f"[SF CALLBACK ERROR] {e}")
-        await sendMessage(query.message, f"❌ Lỗi mirror: {e}")
+        try:
+            await sendMessage(query.message, f"❌ Lỗi mirror: {e}")
+        except Exception:
+            pass
 
 
 bot.add_handler(CallbackQueryHandler(wzmlxcb, filters=regex(r"^wzmlx")))

@@ -13,10 +13,8 @@ from .auth_manager import is_authorized, add_authorized, remove_authorized, get_
 from .mock_telegram import MockMessage
 
 
-async def _run_mirror(interaction: discord.Interaction, link: str, options: str = ""):
-    """Execute a mirror task through the WZML core.
-    Uses a SINGLE Discord message for the entire task lifecycle.
-    """
+async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, link: str, options: str, run_func):
+    """Generic task runner that builds the single-message UI lifecycle and delegates to WZML."""
     user = interaction.user
     channel = interaction.channel
 
@@ -33,8 +31,8 @@ async def _run_mirror(interaction: discord.Interaction, link: str, options: str 
         )
         return
 
-    # Build command text as the Telegram bot expects
-    cmd_text = f"/m {link}"
+    # Build command text parser
+    cmd_text = f"/{cmd_prefix} {link}"
     if options:
         cmd_text += f" {options}"
 
@@ -46,7 +44,7 @@ async def _run_mirror(interaction: discord.Interaction, link: str, options: str 
             description=f"**Link:** `{truncated}`",
             color=0xFEE75C,
         ),
-        wait=True,  # Returns the Message object
+        wait=True,
     )
 
     # Create mock with the Discord message already set
@@ -58,13 +56,12 @@ async def _run_mirror(interaction: discord.Interaction, link: str, options: str 
     )
     mock_msg._discord_msg = initial_msg  # All future edits go to this message
     mock_msg.id = initial_msg.id
-    mock_msg.link = link  # Use the original mirror URL for the [Link] text
+    mock_msg.link = link  # Use the original URL for the [Source Link] text
 
     try:
-        from ..modules.mirror_leech import Mirror
-        await Mirror(None, mock_msg).new_event()
+        await run_func(mock_msg)
     except Exception as e:
-        LOGGER.error(f"Discord mirror error: {e}", exc_info=True)
+        LOGGER.error(f"Discord command error ({cmd_prefix}): {e}", exc_info=True)
         try:
             await initial_msg.edit(embed=discord.Embed(
                 title="❌ Error",
@@ -98,15 +95,56 @@ def _get_readable_time(seconds: float) -> str:
 def setup_commands(tree: app_commands.CommandTree):
     """Register all slash commands on the command tree."""
 
-    @tree.command(name="m", description="Mirror a link to cloud storage")
+    @tree.command(name="mirror", description="Mirror a link to cloud storage")
     @app_commands.describe(
         link="The URL/magnet/link to mirror",
         options="Additional options (e.g. -z for compress, -e for extract)",
     )
     async def mirror_cmd(interaction: discord.Interaction, link: str, options: str = ""):
-        # Defer IMMEDIATELY to guarantee response within 3s
+        from ..modules.mirror_leech import Mirror
+        async def run_func(msg):
+            await Mirror(None, msg).new_event()
+
         await interaction.response.defer()
-        bot_loop.create_task(_run_mirror(interaction, link, options))
+        bot_loop.create_task(_execute_wzml_task(interaction, "mirror", link, options, run_func))
+
+    @tree.command(name="qm", description="Mirror a link using qBittorrent to cloud storage")
+    @app_commands.describe(
+        link="The torrent/magnet link to mirror via qBittorrent",
+        options="Additional options (e.g. -z for compress, -e for extract)",
+    )
+    async def qm_cmd(interaction: discord.Interaction, link: str, options: str = ""):
+        from ..modules.mirror_leech import Mirror
+        async def run_func(msg):
+            await Mirror(None, msg, is_qbit=True).new_event()
+
+        await interaction.response.defer()
+        bot_loop.create_task(_execute_wzml_task(interaction, "qm", link, options, run_func))
+
+    @tree.command(name="clone", description="Clone a Google Drive link or rclone path")
+    @app_commands.describe(
+        link="The Google Drive link/ID or rclone path to clone",
+        options="Additional options",
+    )
+    async def clone_cmd(interaction: discord.Interaction, link: str, options: str = ""):
+        from ..modules.clone import Clone
+        async def run_func(msg):
+            await Clone(None, msg).new_event()
+
+        await interaction.response.defer()
+        bot_loop.create_task(_execute_wzml_task(interaction, "clone", link, options, run_func))
+
+    @tree.command(name="del", description="Delete a file/folder from Google Drive")
+    @app_commands.describe(
+        link="The Google Drive link to delete",
+    )
+    async def del_cmd(interaction: discord.Interaction, link: str):
+        from ..modules.gd_delete import delete_file
+        async def run_func(msg):
+            await delete_file(None, msg)
+
+        await interaction.response.defer()
+        bot_loop.create_task(_execute_wzml_task(interaction, "del", link, "", run_func))
 
     @tree.command(name="ping", description="Check bot latency")
     async def ping_cmd(interaction: discord.Interaction):

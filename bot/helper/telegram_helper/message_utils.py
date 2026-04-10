@@ -30,6 +30,9 @@ from ..ext_utils.status_utils import get_readable_message
 
 
 async def send_message(message, text, buttons=None, block=True, photo=None, **kwargs):
+    # Discord MockMessage early path — bypass all Telegram logic
+    if getattr(message, "is_mock", False):
+        return await message.reply(text=str(text), reply_markup=buttons)
     try:
         if photo:
             try:
@@ -104,6 +107,9 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
 
 
 async def edit_message(message, text, buttons=None, block=True):
+    # Discord MockMessage early path
+    if getattr(message, "is_mock", False):
+        return await message.edit(text=str(text), reply_markup=buttons)
     try:
         return await message.edit(
             text=text,
@@ -178,7 +184,12 @@ async def send_rss(text, chat_id, thread_id):
 
 
 async def delete_message(*args):
-    tasks = [msg.delete() for msg in args if isinstance(msg, Message)]
+    tasks = []
+    for msg in args:
+        if isinstance(msg, Message):
+            tasks.append(msg.delete())
+        elif getattr(msg, "is_mock", False):
+            tasks.append(msg.delete())
     if not tasks:
         return
     results = await gather(*tasks, return_exceptions=True)
@@ -376,6 +387,9 @@ async def send_status_message(msg, user_id=0):
                 "is_user": is_user,
             }
         if not intervals["status"].get(sid) and not is_user:
+            # Use Discord-specific interval if the status message is from Discord
+            is_discord = getattr(message, "is_mock", False)
+            interval = Config.DISCORD_STATUS_INTERVAL if is_discord else Config.STATUS_UPDATE_INTERVAL
             intervals["status"][sid] = SetInterval(
-                Config.STATUS_UPDATE_INTERVAL, update_status_message, sid
+                interval, update_status_message, sid
             )

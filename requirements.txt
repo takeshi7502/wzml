@@ -1,5 +1,6 @@
 asyncio
 aiofiles
+discord.py
 aiohttp
 aioshutil
 anytree

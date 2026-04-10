@@ -1,3 +1,11 @@
+# ══════════════════════════════════════════
+# DISCORD BOT CONFIG (Parasite Mode)
+# ══════════════════════════════════════════
+DISCORD_BOT_TOKEN = ""        # Discord Bot Token from Developer Portal
+DISCORD_ADMIN_ID = 0          # Discord User ID of bot admin (only this user can use /a)
+DISCORD_AUTH_SERVERS = ""     # Authorized Discord Server IDs (comma separated)
+DISCORD_STATUS_INTERVAL = 10  # Tần suất cập nhật tiến độ task trên Discord (giây)
+
 # REQUIRED CONFIG
 BOT_TOKEN = ""
 OWNER_ID = 0

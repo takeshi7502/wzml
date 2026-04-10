@@ -138,4 +138,9 @@ TgClient.bot.add_handler(
 )
 
 LOGGER.info("WZ Client(s) & Services Started !")
+
+# Start Discord bot (no-op if DISCORD_BOT_TOKEN is not set)
+from .discord_bot.discord_client import DiscordBot
+bot_loop.run_until_complete(DiscordBot.start())
+
 bot_loop.run_forever()

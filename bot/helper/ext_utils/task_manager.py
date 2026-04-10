@@ -247,6 +247,16 @@ async def pre_task_check(message):
     LOGGER.info("Running Pre Task Checks ...")
     msg = []
     button = None
+    # Skip Telegram-specific checks for Discord mock messages
+    if getattr(message, "is_mock", False):
+        user_id = message.from_user.id
+        user_dict = user_data.get(user_id, {})
+        bmax_tasks = safe_int(user_dict.get("bmax_tasks", Config.BOT_MAX_TASKS))
+        if bmax_tasks > 0 and len(await get_specific_tasks("All", False)) >= bmax_tasks:
+            msg.append(f"Max Concurrent Bot Tasks Limit exceeded. Limit: {bmax_tasks}")
+        if msg:
+            return "\n".join(msg), None
+        return None, None
     if await CustomFilters.sudo("", message):
         return msg, button
     user_id = (message.from_user or message.sender_chat).id

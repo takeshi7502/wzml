@@ -137,8 +137,9 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     embed = discord.Embed(color=0x5865F2)
 
     lines = cleaned.split("\n")
-    task_name = ""
-    fields = []
+    tasks = []
+    current_task_name = ""
+    current_task_fields = []
 
     # Fields to skip in Discord
     skip_fields = {"In Mode", "Out Mode"}
@@ -148,10 +149,15 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
         if not line:
             continue
 
-        # Task name (numbered item: **1.** filename)
-        if re.match(r"^\*\*\d+\.\*\*", line):
-            task_name = re.sub(r"^\*\*\d+\.\*\*\s*", "", line).strip("* ")
-            continue
+        # Task name (numbered item: **1.** filename or just **filename**)
+        if re.match(r"^\*\*\d+\.\*\*", line) or re.match(r"^\*\*.*\*\*$", line):
+            # Only match if it's not a field line
+            if "→" not in line and "Progress" not in line:
+                if current_task_name or current_task_fields:
+                    tasks.append((current_task_name, current_task_fields))
+                    current_task_fields = []
+                current_task_name = line.replace("**", "").strip()
+                continue
 
         # Skip leftover "Task By" text that wasn't caught by _extract_task_by
         if "Task By" in line:
@@ -165,28 +171,60 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             if fname in skip_fields:
                 continue
             if fname and fvalue:
-                fields.append((fname, fvalue))
+                current_task_fields.append((fname, fvalue))
             continue
 
         # Progress bar
-        if "⬢" in line or "⬡" in line:
-            fields.append(("Progress", line))
+        if "⬢" in line or "⬡" in line or "●" in line or "○" in line:
+            current_task_fields.append(("Progress", line))
+            continue
+            
+        if "─" in line and "%" in line:
+            current_task_fields.append(("Progress", line))
             continue
 
-    if task_name:
-        if len(task_name) > 256:
-            task_name = task_name[:253] + "..."
-        embed.title = task_name
+    if current_task_name or current_task_fields:
+        tasks.append((current_task_name, current_task_fields))
 
-    for fname, fvalue in fields:
-        if len(fvalue) > 1024:
-            fvalue = fvalue[:1021] + "..."
-        embed.add_field(name=fname, value=fvalue, inline=True)
+    embed = discord.Embed(color=0x5865F2)
+    max_fields = 25
+    field_count = 0
 
-    if not fields and not task_name:
+    if len(tasks) == 0:
         if len(cleaned) > 4096:
             cleaned = cleaned[:4093] + "..."
         embed.description = cleaned or "Processing..."
+    elif len(tasks) == 1:
+        # Single task logic - Title is Task Name
+        task_name, fields = tasks[0]
+        if task_name:
+            clean_name = re.sub(r'^\d+\.\s*', '', task_name)
+            embed.title = clean_name[:253] + "..." if len(clean_name) > 256 else clean_name
+        for fname, fvalue in fields:
+            if field_count >= max_fields:
+                break
+            embed.add_field(name=fname, value=fvalue[:1021] + "..." if len(fvalue)>1024 else fvalue, inline=True)
+            field_count += 1
+    else:
+        # Multi task logic - Generic Title, Task Names as field separators
+        embed.title = f"🔄 Running Tasks ({len(tasks)})"
+        for t_name, fields in tasks:
+            if field_count >= max_fields - 3:
+                embed.add_field(name="...", value="More tasks hidden (Discord limit)", inline=False)
+                break
+                
+            if not t_name:
+                t_name = "Unknown Task"
+            
+            # Use invisible char to force new row, value as separator
+            embed.add_field(name=t_name[:256], value="▬▬" * 10, inline=False)
+            field_count += 1
+            
+            for fname, fvalue in fields:
+                if field_count >= max_fields:
+                    break
+                embed.add_field(name=fname, value=fvalue[:1021] + "..." if len(fvalue)>1024 else fvalue, inline=True)
+                field_count += 1
 
     # Add Task By to the end of the description
     if task_by_value:
@@ -389,6 +427,7 @@ class MockMessage:
     """
 
     is_mock = True
+    _active_channel_msg: dict[int, int] = {}
 
     def __init__(
         self,
@@ -403,7 +442,6 @@ class MockMessage:
         self._discord_msg: discord.Message | None = None
         self._gid: str | None = None
         self._view: StopButtonView | None = None
-        self._protect_from_delete = False  # If True, delete() is a no-op
 
         # Pyrogram-compatible attributes
         self.id = int(f"{channel.id}{int(time() * 1000) % 10**8}")
@@ -440,25 +478,22 @@ class MockMessage:
     async def reply(self, text, quote=True, disable_web_page_preview=True,
                     disable_notification=True, reply_markup=None, **kwargs):
         """Reply — if _discord_msg exists, EDIT it (single-message mode).
-        Otherwise send a new message. Auto-DMs completion to user."""
+        Returns a clone of itself with the updated _discord_msg so core tracks it properly.
+        """
         try:
-            uid = self._discord_user.id if self._discord_user else None
-
+            # Check if this is a completion/error HTML message
             is_task_complete = False
-            is_status = "Bot Stats" in text or "┠ Processed" in text
-            if is_status:
-                gid_match = re.search(r"/c(?:ancel)?_?ask_?(\w+)", text)
-                if not gid_match:
-                    gid_match = re.search(r"(?:Stop|stop).*?[→➔].*?/\w+_(\w+)", text)
-                if gid_match and not self._gid:
-                    self._gid = gid_match.group(1)
-                
-                embed = _parse_status_to_embed(text, self._gid, uid, self.link)
-            else:
+            uid = self._discord_user.id if self._discord_user else None
+            
+            if "<b>Task By" in text or "Action Performed" in text or "Download Stopped" in text or "List Results" in text:
                 embed, is_task_complete = _parse_completion_embed(text, uid, self.link)
+            else:
+                embed = _parse_status_to_embed(text, self._gid, uid, self.link)
 
-            # Build view from reply_markup (URL buttons)
+            # Build Discord native View from pyrogram inline_keyboard
             view = None
+            is_status = "Progress" in text or "bot_stats" in text or "Engine" in text
+
             if reply_markup and hasattr(reply_markup, "inline_keyboard"):
                 view = discord.ui.View(timeout=None)
                 for row in reply_markup.inline_keyboard:
@@ -483,10 +518,10 @@ class MockMessage:
                 await self._discord_msg.edit(embed=embed, view=view)
                 clone = MockMessage(self._channel, self._discord_user, text)
                 clone._discord_msg = self._discord_msg
-                clone._protect_from_delete = True
                 clone.id = self._discord_msg.id
                 clone.link = self.link
                 clone.text = text
+                MockMessage._active_channel_msg[self._channel.id] = self._discord_msg.id
             else:
                 # No existing message — send new
                 msg = await self._channel.send(embed=embed, view=view)
@@ -495,6 +530,7 @@ class MockMessage:
                 clone.id = msg.id
                 clone.link = self.link
                 clone.text = text
+                MockMessage._active_channel_msg[self._channel.id] = msg.id
 
             # Auto-DM completion embed to user
             if is_task_complete:
@@ -553,10 +589,14 @@ class MockMessage:
             return str(e)
 
     async def delete(self):
-        """Delete the Discord message. No-op if _protect_from_delete."""
-        if self._protect_from_delete or not self._discord_msg:
+        """Delete the Discord message. Aborts if it's the active status message for the channel."""
+        if not self._discord_msg:
             return
         try:
+            active_id = MockMessage._active_channel_msg.get(self._channel.id)
+            if active_id and active_id == self._discord_msg.id:
+                # Do not delete the global active status message for this channel!
+                return
             await self._discord_msg.delete()
         except discord.NotFound:
             pass

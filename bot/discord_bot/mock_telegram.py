@@ -96,7 +96,7 @@ def _extract_task_by(html_text: str) -> tuple[str | None, str]:
     # Build Discord mention
     task_by = f"<@{uid}>"
     if link_url:
-        task_by += f" **[Source Link]**({link_url})"
+        task_by += f" [**Source Link**]({link_url})"
 
     return task_by, cleaned
 
@@ -119,7 +119,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     if uid:
         task_by_value = f"<@{uid}>"
         if link_url:
-            task_by_value += f" **[Source Link]**({link_url})"
+            task_by_value += f" [**Source Link**]({link_url})"
     elif extracted_task_by:
         task_by_value = extracted_task_by
 
@@ -219,7 +219,7 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
     if uid:
         task_by_value = f"<@{uid}>"
         if link_url:
-            task_by_value += f" **[Source Link]**({link_url})"
+            task_by_value += f" [**Source Link**]({link_url})"
     elif extracted_task_by:
         task_by_value = extracted_task_by
 

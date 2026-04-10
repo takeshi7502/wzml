@@ -70,33 +70,35 @@ def _html_to_discord(text: str) -> str:
 
 def _extract_task_by(html_text: str) -> tuple[str | None, str]:
     """Extract Task By info from HTML and return (task_by_field_value, cleaned_text).
-    Parses #ID and Link from the raw HTML before conversion.
-    Returns Discord mention format <@user_id>.
+    Uses two-step extraction: find #ID, then find Link URL separately.
     """
-    # Match pattern: Task By <b>Name</b> ( #IDxxxxxx ) [<a href='url'>Link</a>]
-    pattern = r"<b>Task By.*?</b>\s*\(\s*#ID(\d+)\s*\)\s*(?:<i>)?\s*(?:\[<a\s+href=['\"]([^'\"]*)['\"]>Link</a>\])?\s*(?:</i>)?"
-    match = re.search(pattern, html_text, re.DOTALL)
-    if match:
-        uid = match.group(1)
-        link_url = match.group(2) if match.group(2) else None
-        # Build clean task_by value with Discord mention
-        task_by = f"<@{uid}>"
-        if link_url:
-            task_by += f" [[Link]]({link_url})"
-        # Remove the matched section from text
-        cleaned = html_text[:match.start()] + html_text[match.end():]
-        return task_by, cleaned
+    # Step 1: Find #ID
+    id_match = re.search(r'#ID(\d+)', html_text)
+    if not id_match or "Task By" not in html_text:
+        return None, html_text
 
-    # Simpler fallback: just #ID without link
-    pattern2 = r"<b>Task By.*?</b>\s*\(\s*#ID(\d+)\s*\)"
-    match2 = re.search(pattern2, html_text, re.DOTALL)
-    if match2:
-        uid = match2.group(1)
-        task_by = f"<@{uid}>"
-        cleaned = html_text[:match2.start()] + html_text[match2.end():]
-        return task_by, cleaned
+    uid = id_match.group(1)
 
-    return None, html_text
+    # Step 2: Find Link URL near the Task By section
+    link_match = re.search(r"<a\s+href=['\"]([^'\"]+)['\"]>Link</a>", html_text)
+    link_url = link_match.group(1) if link_match else None
+
+    # Step 3: Remove entire Task By block from HTML
+    # Matches from <b>Task By... through #IDxxx) and optional [Link]</i>
+    cleaned = re.sub(
+        r'\n*\s*(?:<b>\s*)?Task By.*?#ID\d+\s*\).*?(?:</i>|(?=\n)|$)',
+        '', html_text, count=1, flags=re.DOTALL
+    )
+    # Clean leftover empty tags
+    cleaned = re.sub(r'<b>\s*</b>', '', cleaned)
+    cleaned = re.sub(r'<i>\s*</i>', '', cleaned)
+
+    # Build Discord mention
+    task_by = f"<@{uid}>"
+    if link_url:
+        task_by += f" [Link]({link_url})"
+
+    return task_by, cleaned
 
 
 # ─── Embed builders ─────────────────────────────────────────────
@@ -123,6 +125,9 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
     task_name = ""
     fields = []
 
+    # Fields to skip in Discord
+    skip_fields = {"In Mode", "Out Mode"}
+
     for line in lines:
         line = line.strip()
         if not line:
@@ -142,6 +147,8 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
         if field_match:
             fname = field_match.group(1).strip().strip("*")
             fvalue = field_match.group(2).strip().strip("*") or "—"
+            if fname in skip_fields:
+                continue
             if fname and fvalue:
                 fields.append((fname, fvalue))
             continue
@@ -202,15 +209,34 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
 
     # Extract "Action Performed" section from HTML before conversion
     action_text = None
-    action_match = re.search(r"〶.*?Action Performed.*?(?=┠|┖|┗|$)", text, re.DOTALL)
+    action_match = re.search(r"〶.*?Action Performed.*?(?=┠|┖|┗|<b>Task|$)", text, re.DOTALL)
     if action_match:
         raw_action = action_match.group(0)
-        # Remove it from main text
         text = text[:action_match.start()] + text[action_match.end():]
-        # Convert to clean text
-        action_text = _html_to_discord(raw_action).strip()
-        # Clean up box drawing chars
-        action_text = re.sub(r"[┟┠┖┗├└│┃⋗]+\s*", "", action_text).strip()
+        action_clean = _html_to_discord(raw_action).strip()
+        # Remove the header and box chars, keep only the content
+        action_clean = re.sub(r"[┟┠┖┗├└│┃⋗]+\s*", "", action_clean)
+        action_clean = re.sub(r"〶\s*\*?\*?Action Performed\s*:?\*?\*?\s*", "", action_clean).strip()
+        if action_clean:
+            action_text = action_clean
+
+    # Extract "Download Stopped" / "Here are N list results" for duplicate/cancelled
+    note_text = None
+    stop_match = re.search(r"(🔴\s*)?Download Stopped!?", text)
+    list_match = re.search(r"Here are \d+ list results?:?", text)
+    if stop_match or list_match:
+        note_parts = []
+        if stop_match:
+            note_parts.append("🔴 Download Stopped")
+            text = text[:stop_match.start()] + text[stop_match.end():]
+        if list_match:
+            # Re-search after possible text modification
+            list_match2 = re.search(r"Here are \d+ list results?:?", text)
+            if list_match2:
+                note_parts.append(list_match2.group(0).rstrip(":"))
+                text = text[:list_match2.start()] + text[list_match2.end():]
+        if note_parts:
+            note_text = "\n".join(note_parts)
 
     cleaned = _html_to_discord(text).strip()
 
@@ -225,24 +251,19 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
         line = line.strip()
         if not line:
             continue
-        # Skip Task By leftovers
         if "Task By" in line:
             continue
-        # Skip lines that are just pipe/box-drawing characters
         if re.match(r"^[┟┠┖┗├└│┃|⋗\s]*$", line):
             continue
-        # Parse field lines
         field_match = re.match(r"[┟┠┖┗├└│┃|]+\s*\*?\*?(.+?)\*?\*?\s*→\s*(.*)", line)
         if field_match:
             fname = field_match.group(1).strip().strip("*")
             fvalue = field_match.group(2).strip().strip("*") or "—"
-            # Skip In Mode / Out Mode
             if fname in skip_fields:
                 continue
             if fname and fvalue:
                 embed.add_field(name=fname, value=fvalue, inline=True)
         else:
-            # Clean stray pipe chars from description lines
             cleaned_line = re.sub(r"^[│┃|]+\s*", "", line).strip()
             if cleaned_line:
                 desc_lines.append(cleaned_line)
@@ -253,9 +274,13 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
             desc = desc[:4093] + "..."
         embed.description = desc
 
-    # Task By as field near bottom
+    # Task By
     if task_by_value:
         embed.add_field(name="Task By", value=task_by_value, inline=False)
+
+    # Note (Download Stopped / list results) below Task By
+    if note_text:
+        embed.add_field(name="Note", value=note_text, inline=False)
 
     # Action Performed below Task By
     if action_text:

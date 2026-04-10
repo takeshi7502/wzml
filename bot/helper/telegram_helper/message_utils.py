@@ -37,6 +37,8 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
         if photo:
             try:
                 if isinstance(message, int):
+                    if message > 10**15:
+                        return None
                     return await TgClient.bot.send_photo(
                         chat_id=message,
                         photo=photo,
@@ -75,6 +77,9 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
                 LOGGER.error("Error while sending photo", exc_info=True)
                 return
         if isinstance(message, int):
+            # Skip Discord user IDs — Telegram can't resolve them
+            if message > 10**15:
+                return None
             return await TgClient.bot.send_message(
                 chat_id=message,
                 text=text,

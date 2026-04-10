@@ -166,9 +166,6 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
             fvalue = fvalue[:1021] + "..."
         embed.add_field(name=fname, value=fvalue, inline=True)
 
-    if desc_lines:
-        embed.description = "\n".join(desc_lines)
-
     if not fields and not task_name:
         if len(cleaned) > 4096:
             cleaned = cleaned[:4093] + "..."

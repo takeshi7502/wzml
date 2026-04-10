@@ -246,6 +246,9 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
         if stop_match:
             note_parts.append("🔴 Download Stopped")
             text = text[:stop_match.start()] + text[stop_match.end():]
+            # Safely remove the leftover 〶 icon and its empty formatting tags 
+            # to prevent 'sao lại tòi ra **' bugs and keep everything clean
+            text = re.sub(r"(?:<i>)?(?:<b>)?\s*〶\s*(?:</b>)?(?:</i>)?", "", text)
         if list_match:
             # Re-search after possible text modification
             list_match2 = re.search(r"Here are \d+ list results?:?", text)

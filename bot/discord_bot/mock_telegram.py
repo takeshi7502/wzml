@@ -104,7 +104,7 @@ def _extract_task_by(html_text: str) -> tuple[str | None, str]:
 # ─── Embed builders ─────────────────────────────────────────────
 
 
-def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
+def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, link_url: str | None = None) -> discord.Embed:
     """Parse WZML status HTML into a Discord Embed."""
     # Remove Bot Stats section entirely
     text = re.sub(r"(?:<b>)?\s*⬡?\s*Bot Stats(?:</b>)?.*", "", text, flags=re.DOTALL | re.IGNORECASE)
@@ -113,7 +113,15 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
     text = re.sub(r"[┖┗]\s*Stop\s*[→➔].*", "", text)
 
     # Extract Task By before HTML conversion
-    task_by_value, text = _extract_task_by(text)
+    extracted_task_by, text = _extract_task_by(text)
+    
+    task_by_value = None
+    if uid:
+        task_by_value = f"<@{uid}>"
+        if link_url:
+            task_by_value += f" [Link]({link_url})"
+    elif extracted_task_by:
+        task_by_value = extracted_task_by
 
     cleaned = _html_to_discord(text).strip()
 
@@ -180,7 +188,7 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
     return embed
 
 
-def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
+def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | None = None) -> tuple[discord.Embed, bool]:
     """Parse task completion/error HTML into a Discord Embed.
     Returns (embed, is_task_complete) — is_task_complete=True triggers DM.
     """
@@ -203,8 +211,17 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
         color = 0x5865F2
         title = "📋 Task Update"
 
-    # Extract Task By before conversion
-    task_by_value, text = _extract_task_by(text)
+    # Extract Task By before conversion (for cleanup primarily)
+    # Using the regex to remove it, but we prefer passed-in uid and link_url
+    extracted_task_by, text = _extract_task_by(text)
+    
+    task_by_value = None
+    if uid:
+        task_by_value = f"<@{uid}>"
+        if link_url:
+            task_by_value += f" [Link]({link_url})"
+    elif extracted_task_by:
+        task_by_value = extracted_task_by
 
     # Extract "Action Performed" section from HTML before conversion
     action_text = None
@@ -310,6 +327,7 @@ class StopButtonView(discord.ui.View):
 
     async def _stop_callback(self, interaction: discord.Interaction):
         from ..helper.ext_utils.status_utils import get_task_by_gid
+        from ..core.config_manager import Config
         try:
             task = await get_task_by_gid(self.gid)
             if task is None:
@@ -317,6 +335,17 @@ class StopButtonView(discord.ui.View):
                     "Task not found or already completed!", ephemeral=True
                 )
                 return
+            
+            # Authorization check: only task owner or bot admin can stop
+            user_id = interaction.user.id
+            task_owner_id = getattr(task.listener.message.from_user, "id", None)
+            
+            if user_id != task_owner_id and user_id != Config.DISCORD_ADMIN_ID:
+                await interaction.response.send_message(
+                    "⛔ Bạn không có quyền hủy Task do người khác tạo!", ephemeral=True
+                )
+                return
+
             obj = task.task()
             await obj.cancel_task()
             self.cancelled = True
@@ -400,7 +429,8 @@ class MockMessage:
         """Reply — if _discord_msg exists, EDIT it (single-message mode).
         Otherwise send a new message. Auto-DMs completion to user."""
         try:
-            embed, is_task_complete = _parse_completion_embed(text)
+            uid = self._discord_user.id if self._discord_user else None
+            embed, is_task_complete = _parse_completion_embed(text, uid, self.link)
 
             # Build view from reply_markup (URL buttons)
             view = None
@@ -469,7 +499,8 @@ class MockMessage:
             if gid_match and not self._gid:
                 self._gid = gid_match.group(1)
 
-            embed = _parse_status_to_embed(text, self._gid)
+            uid = self._discord_user.id if self._discord_user else None
+            embed = _parse_status_to_embed(text, self._gid, uid, self.link)
 
             # Stop button
             view = None

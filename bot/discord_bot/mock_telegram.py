@@ -174,31 +174,50 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
     return embed
 
 
-def _parse_completion_embed(text: str) -> discord.Embed:
-    """Parse task completion/error HTML into a Discord Embed."""
-    # Determine embed type with better detection
+def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
+    """Parse task completion/error HTML into a Discord Embed.
+    Returns (embed, is_task_complete) — is_task_complete=True triggers DM.
+    """
+    # Determine embed type
+    is_task_complete = False
     if "already available" in text.lower():
-        color = 0xFEE75C  # Yellow — warning, not failure
+        color = 0xFEE75C
         title = "⚠️ Duplicate Found"
     elif "Download Stopped" in text or "Cancelled" in text:
-        color = 0xED4245  # Red
+        color = 0xED4245
         title = "🛑 Task Cancelled"
     elif "error" in text.lower() or "failed" in text.lower() or "Limit Breached" in text:
-        color = 0xED4245  # Red
+        color = 0xED4245
         title = "❌ Task Failed"
     elif "Task Done" in text or "Task Size" in text:
-        color = 0x57F287  # Green
+        color = 0x57F287
         title = "✅ Task Complete"
+        is_task_complete = True
     else:
-        color = 0x5865F2  # Blue
+        color = 0x5865F2
         title = "📋 Task Update"
 
     # Extract Task By before conversion
     task_by_value, text = _extract_task_by(text)
 
+    # Extract "Action Performed" section from HTML before conversion
+    action_text = None
+    action_match = re.search(r"〶.*?Action Performed.*?(?=┠|┖|┗|$)", text, re.DOTALL)
+    if action_match:
+        raw_action = action_match.group(0)
+        # Remove it from main text
+        text = text[:action_match.start()] + text[action_match.end():]
+        # Convert to clean text
+        action_text = _html_to_discord(raw_action).strip()
+        # Clean up box drawing chars
+        action_text = re.sub(r"[┟┠┖┗├└│┃⋗]+\s*", "", action_text).strip()
+
     cleaned = _html_to_discord(text).strip()
 
     embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
+
+    # Fields to skip
+    skip_fields = {"In Mode", "Out Mode"}
 
     lines = cleaned.split("\n")
     desc_lines = []
@@ -206,17 +225,27 @@ def _parse_completion_embed(text: str) -> discord.Embed:
         line = line.strip()
         if not line:
             continue
-        # Skip leftover Task By text
+        # Skip Task By leftovers
         if "Task By" in line:
             continue
+        # Skip lines that are just pipe/box-drawing characters
+        if re.match(r"^[┟┠┖┗├└│┃|⋗\s]*$", line):
+            continue
+        # Parse field lines
         field_match = re.match(r"[┟┠┖┗├└│┃|]+\s*\*?\*?(.+?)\*?\*?\s*→\s*(.*)", line)
         if field_match:
             fname = field_match.group(1).strip().strip("*")
             fvalue = field_match.group(2).strip().strip("*") or "—"
+            # Skip In Mode / Out Mode
+            if fname in skip_fields:
+                continue
             if fname and fvalue:
                 embed.add_field(name=fname, value=fvalue, inline=True)
         else:
-            desc_lines.append(line)
+            # Clean stray pipe chars from description lines
+            cleaned_line = re.sub(r"^[│┃|]+\s*", "", line).strip()
+            if cleaned_line:
+                desc_lines.append(cleaned_line)
 
     if desc_lines:
         desc = "\n".join(desc_lines)
@@ -224,11 +253,15 @@ def _parse_completion_embed(text: str) -> discord.Embed:
             desc = desc[:4093] + "..."
         embed.description = desc
 
-    # Task By as last field
+    # Task By as field near bottom
     if task_by_value:
         embed.add_field(name="Task By", value=task_by_value, inline=False)
 
-    return embed
+    # Action Performed below Task By
+    if action_text:
+        embed.add_field(name="〶 Action", value=action_text, inline=False)
+
+    return embed, is_task_complete
 
 
 # ─── Stop Button ─────────────────────────────────────────────────
@@ -339,9 +372,9 @@ class MockMessage:
     async def reply(self, text, quote=True, disable_web_page_preview=True,
                     disable_notification=True, reply_markup=None, **kwargs):
         """Reply — if _discord_msg exists, EDIT it (single-message mode).
-        Otherwise send a new message."""
+        Otherwise send a new message. Auto-DMs completion to user."""
         try:
-            embed = _parse_completion_embed(text)
+            embed, is_task_complete = _parse_completion_embed(text)
 
             # Build view from reply_markup (URL buttons)
             view = None
@@ -359,13 +392,11 @@ class MockMessage:
             if self._discord_msg:
                 # EDIT the existing message (single-message lifecycle)
                 await self._discord_msg.edit(embed=embed, view=view)
-                # Return a clone pointing to the same Discord message
                 clone = MockMessage(self._channel, self._discord_user, text)
                 clone._discord_msg = self._discord_msg
                 clone._protect_from_delete = True
                 clone.id = self._discord_msg.id
                 clone.text = text
-                return clone
             else:
                 # No existing message — send new
                 msg = await self._channel.send(embed=embed, view=view)
@@ -373,7 +404,19 @@ class MockMessage:
                 clone._discord_msg = msg
                 clone.id = msg.id
                 clone.text = text
-                return clone
+
+            # Auto-DM completion embed to user
+            if is_task_complete:
+                try:
+                    dm_embed = embed.copy()
+                    dm_embed.set_footer(text=f"From: {self._channel.guild.name}" if hasattr(self._channel, 'guild') and self._channel.guild else "")
+                    await self._discord_user.send(embed=dm_embed, view=view)
+                except discord.Forbidden:
+                    LOGGER.warning(f"Cannot DM user {self._discord_user} — DMs disabled")
+                except Exception as e:
+                    LOGGER.error(f"Discord DM error: {e}")
+
+            return clone
         except Exception as e:
             LOGGER.error(f"Discord reply error: {e}")
             return str(e)

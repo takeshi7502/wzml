@@ -58,6 +58,7 @@ async def _run_mirror(interaction: discord.Interaction, link: str, options: str 
     )
     mock_msg._discord_msg = initial_msg  # All future edits go to this message
     mock_msg.id = initial_msg.id
+    mock_msg.link = link  # Use the original mirror URL for the [Link] text
 
     try:
         from ..modules.mirror_leech import Mirror

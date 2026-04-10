@@ -106,13 +106,11 @@ def _extract_task_by(html_text: str) -> tuple[str | None, str]:
 
 def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
     """Parse WZML status HTML into a Discord Embed."""
-    # Remove Bot Stats section
-    stats_marker = "⌬"
-    if stats_marker in text:
-        text = text[:text.index(stats_marker)]
+    # Remove Bot Stats section entirely
+    text = re.sub(r"(?:<b>)?\s*⬡?\s*Bot Stats(?:</b>)?.*", "", text, flags=re.DOTALL | re.IGNORECASE)
 
     # Remove /cancel command lines
-    text = re.sub(r"[┖┗]\s*Stop\s*→.*", "", text)
+    text = re.sub(r"[┖┗]\s*Stop\s*[→➔].*", "", text)
 
     # Extract Task By before HTML conversion
     task_by_value, text = _extract_task_by(text)
@@ -168,14 +166,18 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
             fvalue = fvalue[:1021] + "..."
         embed.add_field(name=fname, value=fvalue, inline=True)
 
-    # Add Task By as last field (inline=False so it's on its own row)
-    if task_by_value:
-        embed.add_field(name="Task By", value=task_by_value, inline=False)
+    if desc_lines:
+        embed.description = "\n".join(desc_lines)
 
     if not fields and not task_name:
         if len(cleaned) > 4096:
             cleaned = cleaned[:4093] + "..."
         embed.description = cleaned or "Processing..."
+
+    # Add Task By to the end of the description
+    if task_by_value:
+        current_desc = embed.description or ""
+        embed.description = f"{current_desc}\n\n**Task By** {task_by_value}".strip()
 
     embed.timestamp = datetime.now(timezone.utc)
     return embed
@@ -216,7 +218,8 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
         action_clean = _html_to_discord(raw_action).strip()
         # Remove the header and box chars, keep only the content
         action_clean = re.sub(r"[┟┠┖┗├└│┃⋗]+\s*", "", action_clean)
-        action_clean = re.sub(r"〶\s*\*?\*?Action Performed\s*:?\*?\*?\s*", "", action_clean).strip()
+        # Strip the Action Performed header regardless of markdown
+        action_clean = re.sub(r"〶?\s*[*_]*Action\s*Performed\s*:?[*_]*\s*", "", action_clean, flags=re.IGNORECASE).strip()
         if action_clean:
             action_text = action_clean
 
@@ -243,7 +246,7 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
     embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
 
     # Fields to skip
-    skip_fields = {"In Mode", "Out Mode"}
+    skip_fields = {"In Mode", "Out Mode", "Action", "Action Performed"}
 
     lines = cleaned.split("\n")
     desc_lines = []
@@ -274,17 +277,18 @@ def _parse_completion_embed(text: str) -> tuple[discord.Embed, bool]:
             desc = desc[:4093] + "..."
         embed.description = desc
 
-    # Task By
+    # Add Task By to the description (one line)
     if task_by_value:
-        embed.add_field(name="Task By", value=task_by_value, inline=False)
+        current_desc = embed.description or ""
+        embed.description = f"{current_desc}\n\n**Task By** {task_by_value}".strip()
 
-    # Note (Download Stopped / list results) below Task By
+    # Note (Download Stopped / list results) below description
     if note_text:
         embed.add_field(name="Note", value=note_text, inline=False)
 
     # Action Performed below Task By
     if action_text:
-        embed.add_field(name="〶 Action", value=action_text, inline=False)
+        embed.add_field(name="〶 Action Performed", value=action_text, inline=False)
 
     return embed, is_task_complete
 
@@ -421,6 +425,7 @@ class MockMessage:
                 clone._discord_msg = self._discord_msg
                 clone._protect_from_delete = True
                 clone.id = self._discord_msg.id
+                clone.link = self.link
                 clone.text = text
             else:
                 # No existing message — send new
@@ -428,6 +433,7 @@ class MockMessage:
                 clone = MockMessage(self._channel, self._discord_user, text)
                 clone._discord_msg = msg
                 clone.id = msg.id
+                clone.link = self.link
                 clone.text = text
 
             # Auto-DM completion embed to user
@@ -462,7 +468,7 @@ class MockMessage:
             # Extract GID for stop button
             gid_match = re.search(r"/c(?:ancel)?_?ask_?(\w+)", text)
             if not gid_match:
-                gid_match = re.search(r"(?:Stop|stop)\s*→\s*/\w+_(\w+)", text)
+                gid_match = re.search(r"(?:Stop|stop)\s*[→➔]\s*/\w+_(\w+)", text)
             if gid_match and not self._gid:
                 self._gid = gid_match.group(1)
 

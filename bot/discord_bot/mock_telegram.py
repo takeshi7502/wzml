@@ -40,8 +40,7 @@ class MockUser:
         self.is_bot = user.bot
 
     def mention(self, name=None, style="html"):
-        """Callable mention that mimics pyrogram's User.mention(style='html').
-        Also works as attribute access since get_tag checks username first."""
+        """Callable mention that mimics pyrogram's User.mention(style='html')."""
         display = name or self.first_name
         return f"<b>{html_module.escape(display)}</b>"
 
@@ -49,53 +48,79 @@ class MockUser:
         return self.mention(name=name)
 
 
+# ─── HTML → Discord conversion ─────────────────────────────────────
+
+
 def _html_to_discord(text: str) -> str:
-    """Convert Telegram HTML formatting to Discord-friendly markdown/plain text."""
+    """Convert Telegram HTML formatting to Discord markdown."""
     if not text:
         return ""
-    # Bold
     text = re.sub(r"<b>(.*?)</b>", r"**\1**", text, flags=re.DOTALL)
     text = re.sub(r"<strong>(.*?)</strong>", r"**\1**", text, flags=re.DOTALL)
-    # Italic
     text = re.sub(r"<i>(.*?)</i>", r"*\1*", text, flags=re.DOTALL)
     text = re.sub(r"<em>(.*?)</em>", r"*\1*", text, flags=re.DOTALL)
-    # Underline
     text = re.sub(r"<u>(.*?)</u>", r"__\1__", text, flags=re.DOTALL)
-    # Code
     text = re.sub(r"<code>(.*?)</code>", r"`\1`", text, flags=re.DOTALL)
-    # Pre
     text = re.sub(r"<pre>(.*?)</pre>", r"```\1```", text, flags=re.DOTALL)
-    # Links: <a href='URL'>text</a> -> [text](URL)
     text = re.sub(r"<a\s+href=['\"]([^'\"]+)['\"]>(.*?)</a>", r"[\2](\1)", text, flags=re.DOTALL)
-    # Remove remaining HTML tags
     text = re.sub(r"<[^>]+>", "", text)
-    # Unescape HTML entities
     text = html_module.unescape(text)
     return text
 
 
-def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
-    """Parse the WZML status HTML string into a beautiful Discord Embed.
-    Strips Bot Stats section and extracts task info into embed fields.
+def _extract_task_by(html_text: str) -> tuple[str | None, str]:
+    """Extract Task By info from HTML and return (task_by_field_value, cleaned_text).
+    Parses #ID and Link from the raw HTML before conversion.
+    Returns Discord mention format <@user_id>.
     """
+    # Match pattern: Task By <b>Name</b> ( #IDxxxxxx ) [<a href='url'>Link</a>]
+    pattern = r"<b>Task By.*?</b>\s*\(\s*#ID(\d+)\s*\)\s*(?:<i>)?\s*(?:\[<a\s+href=['\"]([^'\"]*)['\"]>Link</a>\])?\s*(?:</i>)?"
+    match = re.search(pattern, html_text, re.DOTALL)
+    if match:
+        uid = match.group(1)
+        link_url = match.group(2) if match.group(2) else None
+        # Build clean task_by value with Discord mention
+        task_by = f"<@{uid}>"
+        if link_url:
+            task_by += f" [[Link]]({link_url})"
+        # Remove the matched section from text
+        cleaned = html_text[:match.start()] + html_text[match.end():]
+        return task_by, cleaned
+
+    # Simpler fallback: just #ID without link
+    pattern2 = r"<b>Task By.*?</b>\s*\(\s*#ID(\d+)\s*\)"
+    match2 = re.search(pattern2, html_text, re.DOTALL)
+    if match2:
+        uid = match2.group(1)
+        task_by = f"<@{uid}>"
+        cleaned = html_text[:match2.start()] + html_text[match2.end():]
+        return task_by, cleaned
+
+    return None, html_text
+
+
+# ─── Embed builders ─────────────────────────────────────────────
+
+
+def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
+    """Parse WZML status HTML into a Discord Embed."""
     # Remove Bot Stats section
     stats_marker = "⌬"
     if stats_marker in text:
         text = text[:text.index(stats_marker)]
 
-    # Remove the /cancel command lines — we'll use a button instead
+    # Remove /cancel command lines
     text = re.sub(r"[┖┗]\s*Stop\s*→.*", "", text)
+
+    # Extract Task By before HTML conversion
+    task_by_value, text = _extract_task_by(text)
 
     cleaned = _html_to_discord(text).strip()
 
-    embed = discord.Embed(
-        color=0x5865F2,  # Discord blurple
-    )
+    embed = discord.Embed(color=0x5865F2)
 
-    # Try to extract task info as fields for cleaner UI
     lines = cleaned.split("\n")
     task_name = ""
-    task_by = ""
     fields = []
 
     for line in lines:
@@ -103,48 +128,44 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
         if not line:
             continue
 
-        # Task name (usually first bold item with number)
+        # Task name (numbered item: **1.** filename)
         if re.match(r"^\*\*\d+\.\*\*", line):
             task_name = re.sub(r"^\*\*\d+\.\*\*\s*", "", line).strip("* ")
             continue
 
-        # Task By line
+        # Skip leftover "Task By" text that wasn't caught by _extract_task_by
         if "Task By" in line:
-            task_by = line.replace("**Task By", "").replace("**", "").strip()
             continue
 
-        # Parse field lines like: ┠ **Speed** → *value*
+        # Field lines: ┠ **Speed** → *value*
         field_match = re.match(r"[┟┠┖┗├└│┃|]+\s*\*?\*?(.+?)\*?\*?\s*→\s*(.*)", line)
         if field_match:
             fname = field_match.group(1).strip().strip("*")
             fvalue = field_match.group(2).strip().strip("*") or "—"
-            # Skip empty or redundant
             if fname and fvalue:
                 fields.append((fname, fvalue))
             continue
 
-        # Progress bar line
-        if "[⬢" in line or "[⬡" in line:
+        # Progress bar
+        if "⬢" in line or "⬡" in line:
             fields.append(("Progress", line))
             continue
 
     if task_name:
-        # Truncate task name if too long for embed title
         if len(task_name) > 256:
             task_name = task_name[:253] + "..."
         embed.title = task_name
 
-    if task_by:
-        embed.set_footer(text=f"Task By {task_by}")
-
     for fname, fvalue in fields:
-        # Discord field value max 1024
         if len(fvalue) > 1024:
             fvalue = fvalue[:1021] + "..."
         embed.add_field(name=fname, value=fvalue, inline=True)
 
+    # Add Task By as last field (inline=False so it's on its own row)
+    if task_by_value:
+        embed.add_field(name="Task By", value=task_by_value, inline=False)
+
     if not fields and not task_name:
-        # Fallback — just put everything in description
         if len(cleaned) > 4096:
             cleaned = cleaned[:4093] + "..."
         embed.description = cleaned or "Processing..."
@@ -155,9 +176,14 @@ def _parse_status_to_embed(text: str, gid: str = None) -> discord.Embed:
 
 def _parse_completion_embed(text: str) -> discord.Embed:
     """Parse task completion/error HTML into a Discord Embed."""
-    cleaned = _html_to_discord(text).strip()
-
-    if "Download Stopped" in text or "Limit Breached" in text:
+    # Determine embed type with better detection
+    if "already available" in text.lower():
+        color = 0xFEE75C  # Yellow — warning, not failure
+        title = "⚠️ Duplicate Found"
+    elif "Download Stopped" in text or "Cancelled" in text:
+        color = 0xED4245  # Red
+        title = "🛑 Task Cancelled"
+    elif "error" in text.lower() or "failed" in text.lower() or "Limit Breached" in text:
         color = 0xED4245  # Red
         title = "❌ Task Failed"
     elif "Task Done" in text or "Task Size" in text:
@@ -167,18 +193,21 @@ def _parse_completion_embed(text: str) -> discord.Embed:
         color = 0x5865F2  # Blue
         title = "📋 Task Update"
 
-    embed = discord.Embed(
-        title=title,
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
+    # Extract Task By before conversion
+    task_by_value, text = _extract_task_by(text)
 
-    # Extract fields
+    cleaned = _html_to_discord(text).strip()
+
+    embed = discord.Embed(title=title, color=color, timestamp=datetime.now(timezone.utc))
+
     lines = cleaned.split("\n")
     desc_lines = []
     for line in lines:
         line = line.strip()
         if not line:
+            continue
+        # Skip leftover Task By text
+        if "Task By" in line:
             continue
         field_match = re.match(r"[┟┠┖┗├└│┃|]+\s*\*?\*?(.+?)\*?\*?\s*→\s*(.*)", line)
         if field_match:
@@ -195,7 +224,14 @@ def _parse_completion_embed(text: str) -> discord.Embed:
             desc = desc[:4093] + "..."
         embed.description = desc
 
+    # Task By as last field
+    if task_by_value:
+        embed.add_field(name="Task By", value=task_by_value, inline=False)
+
     return embed
+
+
+# ─── Stop Button ─────────────────────────────────────────────────
 
 
 class StopButtonView(discord.ui.View):
@@ -205,32 +241,53 @@ class StopButtonView(discord.ui.View):
         super().__init__(timeout=timeout_sec)
         self.gid = gid
         self.cancelled = False
+        stop_btn = discord.ui.Button(
+            label="Stop 🛑",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"stop_{gid}",
+        )
+        stop_btn.callback = self._stop_callback
+        self.add_item(stop_btn)
 
-    @discord.ui.button(label="Stop 🛑", style=discord.ButtonStyle.danger, custom_id="discord_stop_btn")
-    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _stop_callback(self, interaction: discord.Interaction):
         from ..helper.ext_utils.status_utils import get_task_by_gid
-        task = await get_task_by_gid(self.gid)
-        if task is None:
-            await interaction.response.send_message("Task not found or already completed!", ephemeral=True)
-            return
-        obj = task.task()
-        await obj.cancel_task()
-        self.cancelled = True
-        button.disabled = True
-        button.label = "Stopped ✓"
-        button.style = discord.ButtonStyle.secondary
-        await interaction.response.edit_message(view=self)
+        try:
+            task = await get_task_by_gid(self.gid)
+            if task is None:
+                await interaction.response.send_message(
+                    "Task not found or already completed!", ephemeral=True
+                )
+                return
+            obj = task.task()
+            await obj.cancel_task()
+            self.cancelled = True
+            for item in self.children:
+                item.disabled = True
+                item.label = "Stopped ✓"
+                item.style = discord.ButtonStyle.secondary
+            await interaction.response.edit_message(view=self)
+        except Exception as e:
+            LOGGER.error(f"Discord stop button error: {e}")
+            try:
+                await interaction.response.send_message(
+                    f"Error: {e}", ephemeral=True
+                )
+            except Exception:
+                pass
+
+
+# ─── MockMessage ─────────────────────────────────────────────────
 
 
 class MockMessage:
     """Mimics pyrogram.types.Message for the WZML core.
-    
-    This is the heart of the parasite architecture. When the core calls
-    message.reply(), message.edit(), message.delete(), etc., these methods
-    interact with Discord instead of Telegram.
+
+    Heart of the parasite architecture. All message operations
+    (reply, edit, delete) are routed to Discord instead of Telegram.
+    Uses a SINGLE Discord message for the entire task lifecycle.
     """
 
-    is_mock = True  # Flag for duck-type checks in core
+    is_mock = True
 
     def __init__(
         self,
@@ -242,24 +299,29 @@ class MockMessage:
         self._channel = channel
         self._discord_user = user
         self._interaction = interaction
-        self._discord_msg: discord.Message | None = None  # The sent Discord message
-        self._gid: str | None = None  # GID for stop button
+        self._discord_msg: discord.Message | None = None
+        self._gid: str | None = None
         self._view: StopButtonView | None = None
+        self._protect_from_delete = False  # If True, delete() is a no-op
 
-        # Pyrogram-compatible properties
-        self.id = int(f"{channel.id}{int(time() * 1000) % 10**8}")  # Unique-ish ID
+        # Pyrogram-compatible attributes
+        self.id = int(f"{channel.id}{int(time() * 1000) % 10**8}")
         self.text = text
         self.from_user = MockUser(user)
         self.sender_chat = None
         self.chat = MockChat(channel)
         self.date = datetime.now(timezone.utc)
-        self.link = f"https://discord.com/channels/{channel.guild.id}/{channel.id}" if hasattr(channel, 'guild') and channel.guild else ""
+        self.link = (
+            f"https://discord.com/channels/{channel.guild.id}/{channel.id}"
+            if hasattr(channel, "guild") and channel.guild
+            else ""
+        )
         self.reply_to_message = None
         self.reply_to_message_id = None
         self.is_topic_message = False
         self.message_thread_id = None
 
-        # Media attributes (always None for Discord commands)    
+        # Media (always None for Discord)
         self.document = None
         self.photo = None
         self.video = None
@@ -272,47 +334,56 @@ class MockMessage:
         self.empty = False
 
     def set_gid(self, gid: str):
-        """Set the GID for the stop button."""
         self._gid = gid
 
     async def reply(self, text, quote=True, disable_web_page_preview=True,
                     disable_notification=True, reply_markup=None, **kwargs):
-        """Send a reply in Discord channel, returning self for chaining."""
+        """Reply — if _discord_msg exists, EDIT it (single-message mode).
+        Otherwise send a new message."""
         try:
             embed = _parse_completion_embed(text)
-            
-            # Extract URL buttons from reply_markup if present
+
+            # Build view from reply_markup (URL buttons)
             view = None
-            if reply_markup and hasattr(reply_markup, 'inline_keyboard'):
+            if reply_markup and hasattr(reply_markup, "inline_keyboard"):
                 view = discord.ui.View(timeout=None)
                 for row in reply_markup.inline_keyboard:
                     for btn in row:
-                        if hasattr(btn, 'url') and btn.url:
+                        if hasattr(btn, "url") and btn.url:
                             view.add_item(discord.ui.Button(
                                 label=btn.text,
                                 url=btn.url,
                                 style=discord.ButtonStyle.link,
                             ))
 
-            msg = await self._channel.send(embed=embed, view=view)
-            # Return a new MockMessage representing the reply
-            reply_mock = MockMessage(self._channel, self._discord_user, text)
-            reply_mock._discord_msg = msg
-            reply_mock.id = msg.id
-            reply_mock.text = text
-            return reply_mock
+            if self._discord_msg:
+                # EDIT the existing message (single-message lifecycle)
+                await self._discord_msg.edit(embed=embed, view=view)
+                # Return a clone pointing to the same Discord message
+                clone = MockMessage(self._channel, self._discord_user, text)
+                clone._discord_msg = self._discord_msg
+                clone._protect_from_delete = True
+                clone.id = self._discord_msg.id
+                clone.text = text
+                return clone
+            else:
+                # No existing message — send new
+                msg = await self._channel.send(embed=embed, view=view)
+                clone = MockMessage(self._channel, self._discord_user, text)
+                clone._discord_msg = msg
+                clone.id = msg.id
+                clone.text = text
+                return clone
         except Exception as e:
             LOGGER.error(f"Discord reply error: {e}")
             return str(e)
 
     async def reply_photo(self, photo, reply_to_message_id=None, caption="",
                           quote=True, reply_markup=None, disable_notification=True, **kwargs):
-        """Handle photo replies — just send text since we don't need photos on Discord."""
         return await self.reply(caption or "Photo", reply_markup=reply_markup)
 
     async def reply_document(self, document, quote=True, caption="",
                              disable_notification=True, reply_markup=None, **kwargs):
-        """Handle document replies."""
         return await self.reply(caption or "Document", reply_markup=reply_markup)
 
     async def edit(self, text, disable_web_page_preview=True, reply_markup=None):
@@ -320,17 +391,16 @@ class MockMessage:
         if self._discord_msg is None:
             return
         try:
-            # Try to extract GID from the text for the stop button
+            # Extract GID for stop button
             gid_match = re.search(r"/c(?:ancel)?_?ask_?(\w+)", text)
             if not gid_match:
                 gid_match = re.search(r"(?:Stop|stop)\s*→\s*/\w+_(\w+)", text)
-            
             if gid_match and not self._gid:
                 self._gid = gid_match.group(1)
 
             embed = _parse_status_to_embed(text, self._gid)
 
-            # Create stop button view if we have a GID
+            # Stop button
             view = None
             if self._gid:
                 if self._view and not self._view.cancelled:
@@ -348,33 +418,18 @@ class MockMessage:
             return str(e)
 
     async def delete(self):
-        """Delete the Discord message."""
-        if self._discord_msg:
-            try:
-                await self._discord_msg.delete()
-            except discord.NotFound:
-                pass
-            except Exception as e:
-                LOGGER.error(f"Discord delete error: {e}")
+        """Delete the Discord message. No-op if _protect_from_delete."""
+        if self._protect_from_delete or not self._discord_msg:
+            return
+        try:
+            await self._discord_msg.delete()
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            LOGGER.error(f"Discord delete error: {e}")
 
     async def unpin(self):
-        """No-op for Discord."""
         pass
 
     async def download(self):
-        """No-op — Discord parasite doesn't support file downloads."""
         return None
-
-    async def send_initial_message(self, text: str = "⏳ Starting task..."):
-        """Send the initial status message in Discord and store reference."""
-        try:
-            embed = discord.Embed(
-                title="⏳ Starting Task...",
-                description=_html_to_discord(text) if text != "⏳ Starting task..." else "Initializing mirror task...",
-                color=0xFEE75C,  # Yellow
-                timestamp=datetime.now(timezone.utc),
-            )
-            self._discord_msg = await self._channel.send(embed=embed)
-            self.id = self._discord_msg.id
-        except Exception as e:
-            LOGGER.error(f"Discord send_initial error: {e}")

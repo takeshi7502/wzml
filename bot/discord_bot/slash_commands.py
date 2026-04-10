@@ -1,75 +1,97 @@
 """
 Discord slash commands for the WZML parasite bot.
-Implements /m (mirror) and /a (auth) commands.
+Implements /m (mirror), /a (auth), /ping, /stats commands.
 """
 
 import discord
 from discord import app_commands
+from time import time
 
-from .. import LOGGER, bot_loop
+from .. import LOGGER, bot_loop, bot_start_time
 from ..core.config_manager import Config
 from .auth_manager import is_authorized, add_authorized, remove_authorized, get_authorized_list
 from .mock_telegram import MockMessage
 
 
 async def _run_mirror(interaction: discord.Interaction, link: str, options: str = ""):
-    """Execute a mirror task through the WZML core."""
+    """Execute a mirror task through the WZML core.
+    Uses a SINGLE Discord message for the entire task lifecycle.
+    """
     user = interaction.user
     channel = interaction.channel
 
     # Check authorization
     guild_id = interaction.guild_id if interaction.guild_id else None
     if not is_authorized(guild_id=guild_id, channel_id=channel.id, user_id=user.id):
-        await interaction.response.send_message(
+        await interaction.followup.send(
             embed=discord.Embed(
                 title="⛔ Not Authorized",
-                description="This server/channel is not authorized to use mirror commands.\nAsk the admin to run `/a add <server_id>`.",
+                description="This server/channel is not authorized.\nAsk admin: `/a add <server_id>`",
                 color=0xED4245,
             ),
             ephemeral=True,
         )
         return
 
-    # Acknowledge immediately (Discord requires response within 3s)
-    await interaction.response.send_message(
-        embed=discord.Embed(
-            title="📥 Mirror Task Received",
-            description=f"**Link:** `{link[:100]}{'...' if len(link) > 100 else ''}`\nInitializing...",
-            color=0xFEE75C,
-        ),
-    )
-
-    # Build the command text as the Telegram bot expects it
+    # Build command text as the Telegram bot expects
     cmd_text = f"/m {link}"
     if options:
         cmd_text += f" {options}"
 
-    # Create mock objects
+    # Send ONE initial message via followup (replaces the "thinking..." spinner)
+    truncated = link[:80] + "..." if len(link) > 80 else link
+    initial_msg = await interaction.followup.send(
+        embed=discord.Embed(
+            title="⏳ Processing...",
+            description=f"**Link:** `{truncated}`",
+            color=0xFEE75C,
+        ),
+        wait=True,  # Returns the Message object
+    )
+
+    # Create mock with the Discord message already set
     mock_msg = MockMessage(
         channel=channel,
         user=user,
         text=cmd_text,
         interaction=interaction,
     )
-
-    # Send the initial Discord message that will be updated with progress
-    await mock_msg.send_initial_message(f"Processing: {link[:80]}...")
+    mock_msg._discord_msg = initial_msg  # All future edits go to this message
+    mock_msg.id = initial_msg.id
 
     try:
-        # Import and run Mirror class from the existing WZML modules
         from ..modules.mirror_leech import Mirror
         await Mirror(None, mock_msg).new_event()
     except Exception as e:
         LOGGER.error(f"Discord mirror error: {e}", exc_info=True)
         try:
-            error_embed = discord.Embed(
-                title="❌ Mirror Error",
+            await initial_msg.edit(embed=discord.Embed(
+                title="❌ Error",
                 description=f"```{str(e)[:2000]}```",
                 color=0xED4245,
-            )
-            await channel.send(embed=error_embed)
+            ))
         except Exception:
             pass
+
+
+def _get_readable_time(seconds: float) -> str:
+    """Convert seconds to human readable time string."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds:
+        parts.append(f"{seconds}s")
+    return "".join(parts)
 
 
 def setup_commands(tree: app_commands.CommandTree):
@@ -81,7 +103,56 @@ def setup_commands(tree: app_commands.CommandTree):
         options="Additional options (e.g. -z for compress, -e for extract)",
     )
     async def mirror_cmd(interaction: discord.Interaction, link: str, options: str = ""):
+        # Defer IMMEDIATELY to guarantee response within 3s
+        await interaction.response.defer()
         bot_loop.create_task(_run_mirror(interaction, link, options))
+
+    @tree.command(name="ping", description="Check bot latency")
+    async def ping_cmd(interaction: discord.Interaction):
+        start = time()
+        await interaction.response.send_message("🏓 Calculating...", ephemeral=False)
+        bot_latency = (time() - start) * 1000
+        ws_latency = interaction.client.latency * 1000
+
+        embed = discord.Embed(
+            title="🏓 Pong!",
+            color=0x57F287,
+        )
+        embed.add_field(name="Bot Latency", value=f"`{bot_latency:.2f}ms`", inline=True)
+        embed.add_field(name="WS Latency", value=f"`{ws_latency:.2f}ms`", inline=True)
+
+        await interaction.edit_original_response(content=None, embed=embed)
+
+    @tree.command(name="stats", description="Show bot system statistics")
+    async def stats_cmd(interaction: discord.Interaction):
+        import psutil
+        import shutil
+
+        # Uptime
+        uptime = _get_readable_time(time() - bot_start_time)
+
+        # CPU & RAM
+        cpu_percent = psutil.cpu_percent(interval=0.5)
+        ram = psutil.virtual_memory()
+        ram_percent = ram.percent
+
+        # Disk
+        disk = shutil.disk_usage("/")
+        disk_total = disk.total / (1024 ** 3)
+        disk_used = disk.used / (1024 ** 3)
+        disk_free = disk.free / (1024 ** 3)
+
+        embed = discord.Embed(
+            title="📊 Bot Statistics",
+            color=0x5865F2,
+        )
+        embed.add_field(name="⏱ Uptime", value=f"`{uptime}`", inline=True)
+        embed.add_field(name="🖥 CPU", value=f"`{cpu_percent}%`", inline=True)
+        embed.add_field(name="🧠 RAM", value=f"`{ram_percent}%`", inline=True)
+        embed.add_field(name="💾 Disk", value=f"`{disk_used:.2f}GB/{disk_total:.2f}GB`", inline=True)
+        embed.add_field(name="📂 Free Space", value=f"`{disk_free:.2f}GB`", inline=True)
+
+        await interaction.response.send_message(embed=embed)
 
     @tree.command(name="a", description="Authorize/deauthorize a Discord server for mirror commands")
     @app_commands.describe(

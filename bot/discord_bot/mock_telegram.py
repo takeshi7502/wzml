@@ -55,6 +55,15 @@ def _html_to_discord(text: str) -> str:
     """Convert Telegram HTML formatting to Discord markdown."""
     if not text:
         return ""
+    # Strip empty HTML tags BEFORE conversion to avoid broken markdown
+    text = re.sub(r"<b>\s*</b>", "", text)
+    text = re.sub(r"<i>\s*</i>", "", text)
+    text = re.sub(r"<u>\s*</u>", "", text)
+    text = re.sub(r"<code>\s*</code>", "", text)
+    text = re.sub(r"<pre>\s*</pre>", "", text)
+    text = re.sub(r"<strong>\s*</strong>", "", text)
+    text = re.sub(r"<em>\s*</em>", "", text)
+
     text = re.sub(r"<b>(.*?)</b>", r"**\1**", text, flags=re.DOTALL)
     text = re.sub(r"<strong>(.*?)</strong>", r"**\1**", text, flags=re.DOTALL)
     text = re.sub(r"<i>(.*?)</i>", r"*\1*", text, flags=re.DOTALL)
@@ -96,7 +105,7 @@ def _extract_task_by(html_text: str) -> tuple[str | None, str]:
     # Build Discord mention
     task_by = f"<@{uid}>"
     if link_url:
-        task_by += f" [**Source Link**]({link_url})"
+        task_by += f" **[Source Link]({link_url})**"
 
     return task_by, cleaned
 
@@ -239,7 +248,8 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
 
     # Extract "Download Stopped" / "Here are N list results" for duplicate/cancelled
     note_text = None
-    stop_match = re.search(r"(🔴\s*)?Download Stopped!?", text)
+    # Consume fully to prevent empty <i><b></b></i> becoming **
+    stop_match = re.search(r"(?:<i\s*>\s*<b\s*>\s*)?[〶🔴]?\s*Download Stopped!?(?:\s*</b\s*>\s*</i\s*>)?", text, re.IGNORECASE)
     list_match = re.search(r"Here are \d+ list results?:?", text)
     if stop_match or list_match:
         note_parts = []
@@ -433,7 +443,19 @@ class MockMessage:
         Otherwise send a new message. Auto-DMs completion to user."""
         try:
             uid = self._discord_user.id if self._discord_user else None
-            embed, is_task_complete = _parse_completion_embed(text, uid, self.link)
+
+            is_task_complete = False
+            is_status = "Bot Stats" in text or "┠ Processed" in text
+            if is_status:
+                gid_match = re.search(r"/c(?:ancel)?_?ask_?(\w+)", text)
+                if not gid_match:
+                    gid_match = re.search(r"(?:Stop|stop).*?[→➔].*?/\w+_(\w+)", text)
+                if gid_match and not self._gid:
+                    self._gid = gid_match.group(1)
+                
+                embed = _parse_status_to_embed(text, self._gid, uid, self.link)
+            else:
+                embed, is_task_complete = _parse_completion_embed(text, uid, self.link)
 
             # Build view from reply_markup (URL buttons)
             view = None
@@ -447,6 +469,14 @@ class MockMessage:
                                 url=btn.url,
                                 style=discord.ButtonStyle.link,
                             ))
+
+            # Add Stop button if it's a status message
+            if is_status and self._gid:
+                if self._view and not self._view.cancelled:
+                    view = self._view
+                else:
+                    self._view = StopButtonView(self._gid)
+                    view = self._view
 
             if self._discord_msg:
                 # EDIT the existing message (single-message lifecycle)

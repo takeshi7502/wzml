@@ -342,7 +342,7 @@ class StopButtonView(discord.ui.View):
             
             if user_id != task_owner_id and user_id != Config.DISCORD_ADMIN_ID:
                 await interaction.response.send_message(
-                    "⛔ Bạn không có quyền hủy Task do người khác tạo!", ephemeral=True
+                    "❌ Task này không phải của bạn!", ephemeral=True
                 )
                 return
 

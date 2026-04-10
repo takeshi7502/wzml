@@ -113,6 +113,18 @@ def _extract_task_by(html_text: str) -> tuple[str | None, str]:
 # ─── Embed builders ─────────────────────────────────────────────
 
 
+def _format_discord_link(link_url: str) -> str:
+    """Safely format links for Discord markdown. Magnet links break formatting."""
+    if not link_url:
+        return ""
+    if link_url.startswith("magnet:"):
+        # Truncate overly long magnet links for display
+        short_magnet = link_url[:60] + "..." if len(link_url) > 60 else link_url
+        return f"\n**Source:** `{short_magnet}`"
+    if not link_url.startswith(("http://", "https://")):
+        link_url = "https://" + link_url
+    return f" [**Source Link**]({link_url})"
+
 def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, link_url: str | None = None) -> discord.Embed:
     """Parse WZML status HTML into a Discord Embed."""
     # Remove Bot Stats section entirely
@@ -128,7 +140,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     if uid:
         task_by_value = f"<@{uid}>"
         if link_url:
-            task_by_value += f" [**Source Link**]({link_url})"
+            task_by_value += _format_discord_link(link_url)
     elif extracted_task_by:
         task_by_value = extracted_task_by
 
@@ -266,7 +278,7 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
     if uid:
         task_by_value = f"<@{uid}>"
         if link_url:
-            task_by_value += f" [**Source Link**]({link_url})"
+            task_by_value += _format_discord_link(link_url)
     elif extracted_task_by:
         task_by_value = extracted_task_by
 
@@ -362,57 +374,60 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
 
 
 class StopButtonView(discord.ui.View):
-    """A View with a Stop button for cancelling tasks."""
+    """Dynamic Discord View to hold Stop button(s) for active tasks."""
 
-    def __init__(self, gid: str, timeout_sec: float = 86400):
-        super().__init__(timeout=timeout_sec)
-        self.gid = gid
+    def __init__(self, gids: list[str]):
+        super().__init__(timeout=None)
+        self.gids = gids
         self.cancelled = False
-        stop_btn = discord.ui.Button(
-            label="Stop 🛑",
-            style=discord.ButtonStyle.danger,
-            custom_id=f"stop_{gid}",
-        )
-        stop_btn.callback = self._stop_callback
-        self.add_item(stop_btn)
+        
+        for i, gid in enumerate(gids):
+            label = "Stop 🔴" if len(gids) == 1 else f"Stop {i+1} 🔴"
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.danger, custom_id=f"stop_btn_{gid}")
+            btn.callback = self.make_callback(gid, btn)
+            self.add_item(btn)
 
-    async def _stop_callback(self, interaction: discord.Interaction):
-        from ..helper.ext_utils.status_utils import get_task_by_gid
-        from ..core.config_manager import Config
-        try:
-            task = await get_task_by_gid(self.gid)
-            if task is None:
-                await interaction.response.send_message(
-                    "Task not found or already completed!", ephemeral=True
-                )
-                return
-            
-            # Authorization check: only task owner or bot admin can stop
-            user_id = interaction.user.id
-            task_owner_id = getattr(task.listener.message.from_user, "id", None)
-            
-            if user_id != task_owner_id and user_id != Config.DISCORD_ADMIN_ID:
-                await interaction.response.send_message(
-                    "❌ Task này không phải của bạn!", ephemeral=True
-                )
-                return
-
-            obj = task.task()
-            await obj.cancel_task()
-            self.cancelled = True
-            for item in self.children:
-                item.disabled = True
-                item.label = "Stopped ✓"
-                item.style = discord.ButtonStyle.secondary
-            await interaction.response.edit_message(view=self)
-        except Exception as e:
-            LOGGER.error(f"Discord stop button error: {e}")
+    def make_callback(self, gid: str, button: discord.ui.Button):
+        async def stop_callback(interaction: discord.Interaction):
+            from ..helper.ext_utils.status_utils import get_task_by_gid
+            from ..core.config_manager import Config
             try:
-                await interaction.response.send_message(
-                    f"Error: {e}", ephemeral=True
-                )
-            except Exception:
-                pass
+                task = await get_task_by_gid(gid)
+                if task is None:
+                    await interaction.response.send_message(
+                        "Task not found or already completed!", ephemeral=True
+                    )
+                    return
+                
+                # Authorization check: only task owner or bot admin can stop
+                user_id = interaction.user.id
+                task_owner_id = getattr(task.listener.message.from_user, "id", None)
+                
+                if user_id != task_owner_id and user_id != Config.DISCORD_ADMIN_ID:
+                    await interaction.response.send_message(
+                        "❌ Task này không phải của bạn!", ephemeral=True
+                    )
+                    return
+
+                obj = task.task()
+                await obj.cancel_task()
+                
+                button.disabled = True
+                button.label = "Stopped ✓"
+                button.style = discord.ButtonStyle.secondary
+                
+                if all(item.disabled for item in self.children if isinstance(item, discord.ui.Button) and item.style == discord.ButtonStyle.secondary):
+                    self.cancelled = True
+                    
+                await interaction.response.edit_message(view=self)
+            except Exception as e:
+                try:
+                    await interaction.response.send_message(
+                        f"Error: {e}", ephemeral=True
+                    )
+                except Exception:
+                    pass
+        return stop_callback
 
 
 # ─── MockMessage ─────────────────────────────────────────────────
@@ -505,12 +520,24 @@ class MockMessage:
                                 style=discord.ButtonStyle.link,
                             ))
 
-            # Add Stop button if it's a status message
-            if is_status and self._gid:
-                if self._view and not self._view.cancelled:
+            # Extract GIDs for stop buttons
+            gids_matches = re.finditer(r"(?:/c(?:ancel)?_?ask_?|(?:Stop|stop).*?[→➔].*?/\w+_?)(\w+)", text)
+            gids = []
+            for match in gids_matches:
+                if match.group(1) not in gids:
+                    gids.append(match.group(1))
+
+            if not gids and self._gid:
+                gids = [self._gid]
+            elif gids:
+                self._gid = gids[0]  # Just keep the first one for backwards compatibility
+            
+            # Add Stop buttons if it's a status message
+            if is_status and gids:
+                if self._view and not self._view.cancelled and getattr(self._view, 'gids', []) == gids:
                     view = self._view
                 else:
-                    self._view = StopButtonView(self._gid)
+                    self._view = StopButtonView(gids)
                     view = self._view
 
             if self._discord_msg:
@@ -561,23 +588,28 @@ class MockMessage:
         if self._discord_msg is None:
             return
         try:
-            # Extract GID for stop button
-            gid_match = re.search(r"/c(?:ancel)?_?ask_?(\w+)", text)
-            if not gid_match:
-                gid_match = re.search(r"(?:Stop|stop).*?[→➔].*?/\w+_(\w+)", text)
-            if gid_match and not self._gid:
-                self._gid = gid_match.group(1)
+            # Extract ALL GIDs for stop buttons
+            gids_matches = re.finditer(r"(?:/c(?:ancel)?_?ask_?|(?:Stop|stop).*?[→➔].*?/\w+_?)(\w+)", text)
+            gids = []
+            for match in gids_matches:
+                if match.group(1) not in gids:
+                    gids.append(match.group(1))
+
+            if not gids and self._gid:
+                gids = [self._gid]
+            elif gids:
+                self._gid = gids[0]
 
             uid = self._discord_user.id if self._discord_user else None
             embed = _parse_status_to_embed(text, self._gid, uid, self.link)
 
             # Stop button
             view = None
-            if self._gid:
-                if self._view and not self._view.cancelled:
+            if gids:
+                if self._view and not self._view.cancelled and getattr(self._view, 'gids', []) == gids:
                     view = self._view
                 else:
-                    self._view = StopButtonView(self._gid)
+                    self._view = StopButtonView(gids)
                     view = self._view
 
             await self._discord_msg.edit(embed=embed, view=view)

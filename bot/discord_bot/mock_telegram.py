@@ -156,6 +156,9 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
         line = line.strip()
         if not line:
             continue
+        # Skip lines that are only box-drawing/border characters (e.g. stray ┟ ┠ │ └)
+        if re.match(r'^[┟┠┖┗├└│┃|⋗\s▬─]+$', line):
+            continue
 
         if re.match(r"^\*\*\d+\.\*\*", line) or re.match(r"^\*\*.*\*\*$", line):
             # Only match if it's not a field line

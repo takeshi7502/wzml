@@ -314,8 +314,8 @@ def setup_commands(tree: app_commands.CommandTree):
             result = await add_authorized(target_id)
             if result:
                 embed = discord.Embed(
-                    title="✅ Bổ Sung Thành Công",
-                    description=f"ID `{target_id}` đã được cấp quyền sử dụng các nền tảng lệnh tải.",
+                    title="✅ Cấp Quyền Thành Công",
+                    description=f"ID `{target_id}` đã được cấp quyền sử dụng bot.",
                     color=0x57F287,
                 )
             else:

@@ -14,39 +14,6 @@ import discord
 
 from .. import LOGGER
 
-VI_DICT = {
-    "Progress": "Tiến Độ",
-    "Processed": "Đã Xử Lý",
-    "Status": "Trạng Thái",
-    "Speed": "Tốc Độ",
-    "Time": "Thời Gian",
-    "Engine": "Động Cơ",
-    "Size": "Kích Thước",
-    "Name": "Tên File",
-    "Task Size": "Tổng Dung Lượng",
-    "Time Taken": "Gian Chạy",
-    "Due To": "Nguyên Nhân",
-    "In Mode": "Chế Độ Vào",
-    "Out Mode": "Chế Độ Ra",
-    "Action": "Hành Động",
-    "Downloading": "Đang Tải Xuống",
-    "Uploading": "Đang Tải Lên",
-    "Cloning": "Đang Nhân Bản",
-    "Extracting": "Đang Giải Nén",
-    "Archiving": "Đang Nén",
-    "Missing": "Đang Tổ Hợp",
-    "Queued Download": "Chờ Tải Xuống",
-    "Queued Upload": "Chờ Tải Lên",
-    "Pause": "Tạm Dừng",
-    "Up": "Tải Lên",
-    "Down": "Tải Xuống",
-    "Download": "Tải Xuống",
-    "Upload": "Tải Lên",
-    "Clone": "Nhân Bản",
-    "Seed": "Đang Seed",
-    "Seeding": "Đang Seed",
-}
-
 
 class MockChat:
     """Mimics pyrogram.types.Chat for the WZML core."""
@@ -215,19 +182,17 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             fvalue = field_match.group(2).strip().strip("*") or "—"
             if fname in skip_fields:
                 continue
-            fname = VI_DICT.get(fname, fname)
-            fvalue = VI_DICT.get(fvalue, fvalue)
             if fname and fvalue:
                 current_task_fields.append((fname, fvalue))
             continue
 
         # Progress bar
         if "⬢" in line or "⬡" in line or "●" in line or "○" in line:
-            current_task_fields.append((VI_DICT.get("Progress", "Progress"), line))
+            current_task_fields.append(("Progress", line))
             continue
             
         if "─" in line and "%" in line:
-            current_task_fields.append((VI_DICT.get("Progress", "Progress"), line))
+            current_task_fields.append(("Progress", line))
             continue
 
     if current_task_name or current_task_fields:
@@ -240,17 +205,17 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     if len(tasks) == 0:
         if len(cleaned) > 4096:
             cleaned = cleaned[:4093] + "..."
-        embed.description = cleaned or "Đang tiến hành xử lý..."
+        embed.description = cleaned or "Processing..."
     else:
         # Task logic ALWAYS uses list structure, even for 1 task
-        embed.title = f"🔄 Đang Chạy ({len(tasks)} Nhiệm vụ)"
+        embed.title = f"🔄 Running Tasks ({len(tasks)})"
         for t_name, fields in tasks:
             if field_count >= max_fields - 3:
-                embed.add_field(name="...", value="Các nhiệm vụ khác bị ẩn bởi giới hạn Discord", inline=False)
+                embed.add_field(name="...", value="More tasks hidden (Discord limit)", inline=False)
                 break
                 
             if not t_name:
-                t_name = "Nhiệm Vụ Ẩn Danh"
+                t_name = "Unknown Task"
             
             # Place the horizontal separator ABOVE the task name, except for the first task
             if field_count > 0:
@@ -269,7 +234,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     # Add Task By to the end of the description
     if task_by_value:
         current_desc = embed.description or ""
-        embed.description = f"{current_desc}\n\n**🙋 Người Yêu Cầu:** {task_by_value}".strip()
+        embed.description = f"{current_desc}\n\n**Task By** {task_by_value}".strip()
 
     embed.timestamp = datetime.now(timezone.utc)
     return embed
@@ -283,20 +248,20 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
     is_task_complete = False
     if "already available" in text.lower():
         color = 0xFEE75C
-        title = "⚠️ Phát Hiện Trùng Lặp"
+        title = "⚠️ Duplicate Found"
     elif "Download Stopped" in text or "Cancelled" in text:
         color = 0xED4245
-        title = "🛑 Đã Huỷ Nhiệm Vụ"
+        title = "🛑 Task Cancelled"
     elif "error" in text.lower() or "failed" in text.lower() or "Limit Breached" in text:
         color = 0xED4245
-        title = "❌ Nhiệm Vụ Thất Bại"
+        title = "❌ Task Failed"
     elif "Task Done" in text or "Task Size" in text:
         color = 0x57F287
-        title = "✅ Hoàn Thành Cập Bến"
+        title = "✅ Task Complete"
         is_task_complete = True
     else:
         color = 0x5865F2
-        title = "📋 Trạng Thái Nhiệm Vụ"
+        title = "📋 Task Update"
 
     # Extract Task By before conversion (for cleanup primarily)
     # Using the regex to remove it, but we prefer passed-in uid and link_url
@@ -332,7 +297,7 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
     if stop_match or list_match:
         note_parts = []
         if stop_match:
-            note_parts.append("🔴 Nhiệm Vụ Bị Dừng")
+            note_parts.append("🔴 Download Stopped")
             text = text[:stop_match.start()] + text[stop_match.end():]
             # Safely remove the leftover 〶 icon and its empty formatting tags 
             # to prevent 'sao lại tòi ra **' bugs and keep everything clean
@@ -369,8 +334,6 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
             fvalue = field_match.group(2).strip().strip("*") or "—"
             if fname in skip_fields:
                 continue
-            fname = VI_DICT.get(fname, fname)
-            fvalue = VI_DICT.get(fvalue, fvalue)
             if fname and fvalue:
                 embed.add_field(name=fname, value=fvalue, inline=True)
         else:
@@ -387,15 +350,15 @@ def _parse_completion_embed(text: str, uid: int | None = None, link_url: str | N
     # Add Task By to the description (one line)
     if task_by_value:
         current_desc = embed.description or ""
-        embed.description = f"{current_desc}\n\n**🙋 Người Yêu Cầu:** {task_by_value}".strip()
+        embed.description = f"{current_desc}\n\n**Task By** {task_by_value}".strip()
 
     # Note (Download Stopped / list results) below description
     if note_text:
-        embed.add_field(name="Ghi Chú", value=note_text, inline=False)
+        embed.add_field(name="Note", value=note_text, inline=False)
 
     # Action Performed below Task By
     if action_text:
-        embed.add_field(name="〶 Hệ Thống Báo Cáo", value=action_text, inline=False)
+        embed.add_field(name="〶 Action Performed", value=action_text, inline=False)
 
     return embed, is_task_complete
 

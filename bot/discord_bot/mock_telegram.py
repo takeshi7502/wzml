@@ -517,11 +517,15 @@ class TorrentSelectView(discord.ui.View):
             # Only update the VIEW (disable buttons). Do NOT set content — the status
             # monitor owns the message body and will update it on its next cycle.
             await interaction.edit_message(view=self)
-            # Ephemeral ACK so the user gets instant feedback
-            await interaction.followup.send(
-                "▶️ **Đã xác nhận! Bot đang tiếp tục tải file đã chọn...**",
-                ephemeral=True,
-            )
+
+            # Force-push the Running Tasks embed immediately (send_status_message is
+            # skipped in qbit_download.py when listener.select=True, so we call it here).
+            try:
+                from ..helper.telegram_helper.message_utils import send_status_message
+                await send_status_message(task.listener.message)
+            except Exception:
+                pass  # Non-fatal: periodic status monitor will catch it on next cycle
+
             self.stop()
         except Exception as e:
             await interaction.followup.send(f"Lỗi: {e}", ephemeral=True)

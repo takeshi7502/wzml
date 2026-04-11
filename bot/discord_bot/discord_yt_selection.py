@@ -33,32 +33,27 @@ class DiscordYtSelection:
     #  Internal helpers                                                    #
     # ------------------------------------------------------------------ #
 
-    def _remaining(self) -> str:
-        return get_readable_time(max(0, self._timeout - (time() - self._time)))
+    def _get_discord_msg(self):
+        """Get the initial Discord message from MockMessage."""
+        return getattr(self.listener.message, "_discord_msg", None)
 
     async def _send_or_edit(self, content: str, view: discord.ui.View):
-        """Send or edit the picker message."""
-        msg = self.listener.message
-        channel_msg = getattr(msg, "_discord_msg", None)
-        if self._reply_to is None:
-            if channel_msg:
-                try:
-                    self._reply_to = await channel_msg.channel.send(content, view=view)
-                except Exception:
-                    pass
-        else:
-            try:
-                await self._reply_to.edit(content=content, view=view)
-            except Exception:
-                pass
+        """Edit the existing initial status message in-place (no new messages)."""
+        msg = self._get_discord_msg()
+        if msg is None:
+            return
+        try:
+            await msg.edit(content=content, embed=None, view=view)
+        except Exception:
+            pass
 
     async def _delete_picker(self):
-        if self._reply_to:
-            try:
-                await self._reply_to.delete()
-            except Exception:
-                pass
-            self._reply_to = None
+        """No-op: we reuse the initial message, nothing to delete.
+        The normal status update flow will just edit the same message."""
+        pass
+
+    def _remaining(self) -> str:
+        return get_readable_time(max(0, self._timeout - (time() - self._time)))
 
     # ------------------------------------------------------------------ #
     #  Build Discord View for the main quality menu                       #

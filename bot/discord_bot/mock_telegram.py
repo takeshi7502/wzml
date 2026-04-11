@@ -434,7 +434,159 @@ class StopButtonView(discord.ui.View):
         return stop_callback
 
 
+# ─── Torrent File Selector View ─────────────────────────────────────
+
+
+class TorrentSelectView(discord.ui.View):
+    """
+    Discord-native torrent file selector buttons.
+    Replaces the Telegram inline keyboard from bt_selection_buttons():
+      - "Select Files" → URL link button to BASE_URL/app/files?gid=...
+      - "Done Selecting" → calls confirm_selection logic directly
+      - "Cancel" → cancels the task
+    """
+
+    def __init__(self, gid: str, task_hash: str, owner_id: int, is_qbit: bool = True):
+        super().__init__(timeout=None)
+        self.gid = gid          # short GID (first 12 chars of hash for qbit)
+        self.task_hash = task_hash  # full hash
+        self.owner_id = owner_id
+        self.is_qbit = is_qbit
+
+    async def _check_owner(self, interaction: discord.Interaction) -> bool:
+        from ..core.config_manager import Config
+        if interaction.user.id != self.owner_id and interaction.user.id != Config.DISCORD_ADMIN_ID:
+            await interaction.response.send_message("❌ Nhiệm vụ này không phải của bạn!", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Xác Nhận Đã Chọn", style=discord.ButtonStyle.success)
+    async def done_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            from ..helper.ext_utils.status_utils import get_task_by_gid
+            from ..core.torrent_manager import TorrentManager
+            from aiofiles.os import remove, path as aiopath
+
+            task = await get_task_by_gid(self.gid)
+            if task is None:
+                await interaction.followup.send("⚠️ Task không tồn tại hoặc đã hoàn thành!", ephemeral=True)
+                self.stop()
+                return
+
+            id_ = self.task_hash
+            if self.is_qbit or getattr(task.listener, "is_qbit", False):
+                tor_info = (await TorrentManager.qbittorrent.torrents.info(hashes=[id_]))[0]
+                path = tor_info.content_path.rsplit("/", 1)[0]
+                res = await TorrentManager.qbittorrent.torrents.files(id_)
+                for f in res:
+                    if f.priority == 0:
+                        for f_path in [f"{path}/{f.name}", f"{path}/{f.name}.!qB"]:
+                            if await aiopath.exists(f_path):
+                                try:
+                                    await remove(f_path)
+                                except Exception:
+                                    pass
+                if not task.queued:
+                    await TorrentManager.qbittorrent.torrents.start([id_])
+            else:
+                res = await TorrentManager.aria2.getFiles(id_)
+                for f in res:
+                    if f["selected"] == "false" and await aiopath.exists(f["path"]):
+                        try:
+                            await remove(f["path"])
+                        except Exception:
+                            pass
+                if not task.queued:
+                    try:
+                        await TorrentManager.aria2.unpause(id_)
+                    except Exception:
+                        pass
+
+            button.disabled = True
+            button.label = "✅ Đã Xác Nhận"
+            for child in self.children:
+                child.disabled = True
+            await interaction.edit_original_response(
+                content="▶️ **Tiếp tục tải với file đã chọn...**",
+                view=self,
+            )
+            self.stop()
+        except Exception as e:
+            await interaction.followup.send(f"Lỗi: {e}", ephemeral=True)
+
+    @discord.ui.button(label="❌ Huỷ Tác Vụ", style=discord.ButtonStyle.danger)
+    async def cancel_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        await interaction.response.defer()
+        try:
+            from ..helper.ext_utils.status_utils import get_task_by_gid
+            task = await get_task_by_gid(self.gid)
+            if task:
+                await task.task().cancel_task()
+            for child in self.children:
+                child.disabled = True
+            await interaction.edit_original_response(
+                content="🛑 **Đã huỷ tác vụ.**",
+                view=self,
+            )
+            self.stop()
+        except Exception as e:
+            await interaction.followup.send(f"Lỗi: {e}", ephemeral=True)
+
+
+def _build_torrent_select_view(markup, owner_id: int) -> discord.ui.View | None:
+    """
+    Detect if markup is a bt_selection_buttons result and build TorrentSelectView.
+    bt_selection_buttons uses:
+      data_button("Done Selecting", f"sel done {gid} {id_}")
+      data_button("Cancel", f"sel cancel {gid}")
+      url_button("Select Files", url)
+    """
+    if not markup or not hasattr(markup, "inline_keyboard"):
+        return None
+
+    url_btn = None
+    done_data = None
+    cancel_data = None
+    gid = None
+    task_hash = None
+
+    for row in markup.inline_keyboard:
+        for btn in row:
+            if hasattr(btn, "url") and btn.url and "files?gid=" in (btn.url or ""):
+                url_btn = btn
+            cb = getattr(btn, "callback_data", "") or ""
+            parts = cb.split()
+            if len(parts) >= 3 and parts[0] == "sel":
+                if parts[1] == "done" and len(parts) >= 4:
+                    gid = parts[2]
+                    task_hash = parts[3]
+                    done_data = cb
+                elif parts[1] == "cancel":
+                    gid = gid or parts[2]
+                    cancel_data = cb
+
+    if done_data is None:
+        return None  # not a torrent select markup
+
+    view = TorrentSelectView(gid=gid, task_hash=task_hash, owner_id=owner_id)
+    # Insert URL "Select Files" button at the front if present
+    if url_btn:
+        select_btn = discord.ui.Button(
+            label="🗂️ Chọn File",
+            url=url_btn.url,
+            style=discord.ButtonStyle.link,
+        )
+        view.add_item(select_btn)
+    return view
+
+
 # ─── MockMessage ─────────────────────────────────────────────────
+
 
 
 class MockMessage:
@@ -514,15 +666,20 @@ class MockMessage:
             is_status = "Progress" in text or "bot_stats" in text or "Engine" in text
 
             if reply_markup and hasattr(reply_markup, "inline_keyboard"):
-                view = discord.ui.View(timeout=None)
-                for row in reply_markup.inline_keyboard:
-                    for btn in row:
-                        if hasattr(btn, "url") and btn.url:
-                            view.add_item(discord.ui.Button(
-                                label=btn.text,
-                                url=btn.url,
-                                style=discord.ButtonStyle.link,
-                            ))
+                owner_id = self._discord_user.id if self._discord_user else 0
+                # First: check if this is a torrent file-selector markup
+                view = _build_torrent_select_view(reply_markup, owner_id)
+                if view is None:
+                    # Fall back: convert URL buttons generically
+                    view = discord.ui.View(timeout=None)
+                    for row in reply_markup.inline_keyboard:
+                        for btn in row:
+                            if hasattr(btn, "url") and btn.url:
+                                view.add_item(discord.ui.Button(
+                                    label=btn.text,
+                                    url=btn.url,
+                                    style=discord.ButtonStyle.link,
+                                ))
 
             # Extract GIDs for stop buttons by stripping HTML tags first
             clean_text_for_gids = re.sub(r'<[^>]+>', '', text)

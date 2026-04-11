@@ -217,8 +217,12 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             if not t_name:
                 t_name = "Unknown Task"
             
-            # Use invisible char to force new row, value as separator
-            embed.add_field(name=t_name[:256], value="▬▬" * 10, inline=False)
+            # Place the horizontal separator ABOVE the task name, except for the first task
+            if field_count > 0:
+                embed.add_field(name="▬▬" * 15, value="\u200B", inline=False)
+                field_count += 1
+
+            embed.add_field(name=t_name[:256], value="\u200B", inline=False)
             field_count += 1
             
             for fname, fvalue in fields:

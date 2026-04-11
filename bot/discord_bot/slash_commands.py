@@ -159,8 +159,32 @@ def setup_commands(tree: app_commands.CommandTree):
         )
         embed.add_field(name="Bot Latency", value=f"`{bot_latency:.2f}ms`", inline=True)
         embed.add_field(name="WS Latency", value=f"`{ws_latency:.2f}ms`", inline=True)
-
         await interaction.edit_original_response(content=None, embed=embed)
+
+    @tree.command(name="about", description="Giới thiệu và hướng dẫn sử dụng Jin Mirror Bot")
+    async def about_cmd(interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="👋 Giới thiệu Jin Mirror",
+            description="Chào mừng bạn đến với hệ thống Leech/Mirror chuyển đổi lưu trữ siêu tốc độ!\n\n"
+                        "Bot được thiết kế nhắm tới việc giải quyết vấn đề tải file từ các dịch vụ Cloud lưu trữ bị giới hạn băng thông chậm (VD: Terabox, Mega, Fshare, hoặc file Torrent/Magnet). Bot sẽ làm trung gian, tự động kéo file đó với tốc độ không giới hạn của VPS và đưa thẳng lên Google Drive. Từ đó, bạn chỉ việc tải về máy với tốc độ tối đa của Google Drive.",
+            color=0x5865F2,
+        )
+        embed.add_field(
+            name="🛠️ Các Lệnh Cơ Bản",
+            value="🔹 `/m <link>`: Tải link trực tiếp (direct link) hoặc Magnet Torrent về Google Drive.\n"
+                  "🔹 `/qm <link>`: Chỉ định tải bằng động cơ qBittorrent cực khoẻ cho link Magnet/Torrent lớn.\n"
+                  "🔹 `/clone <link>`: Sao chép nhanh một link Google Drive vào vùng chứa Drive của kho.\n"
+                  "🔹 `/del <link>`: Xóa một file hoặc folder Google Drive trực tiếp qua Bot.\n"
+                  "🔹 `/stats`: Kiểm tra tài nguyên hệ thống (RAM, CPU, Dung lượng đĩa trống).",
+            inline=False
+        )
+        embed.add_field(
+            name="💡 Mẹo Nhỏ",
+            value="Trong lúc nhiều file tải xuống cùng lúc, bạn hoàn toàn có thể nhấn nút **Cancel 🔴** có đánh số thứ tự tương ứng ở phía dưới bảng trạng thái để huỷ tiến trình bất kỳ ngay lập tức.",
+            inline=False
+        )
+        embed.set_footer(text="Trợ lý tự động WZML-Discord được vận hành bởi Takeshi.")
+        await interaction.response.send_message(embed=embed)
 
     @tree.command(name="stats", description="Show bot system statistics")
     async def stats_cmd(interaction: discord.Interaction):

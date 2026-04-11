@@ -509,13 +509,18 @@ class TorrentSelectView(discord.ui.View):
                     except Exception:
                         pass
 
+            # Disable all buttons so the user can't double-click
             button.disabled = True
             button.label = "✅ Đã Xác Nhận"
             for child in self.children:
                 child.disabled = True
-            await interaction.edit_original_response(
-                content="▶️ **Tiếp tục tải với file đã chọn...**",
-                view=self,
+            # Only update the VIEW (disable buttons). Do NOT set content — the status
+            # monitor owns the message body and will update it on its next cycle.
+            await interaction.edit_message(view=self)
+            # Ephemeral ACK so the user gets instant feedback
+            await interaction.followup.send(
+                "▶️ **Đã xác nhận! Bot đang tiếp tục tải file đã chọn...**",
+                ephemeral=True,
             )
             self.stop()
         except Exception as e:
@@ -730,7 +735,7 @@ class MockMessage:
             if self._discord_msg:
                 # EDIT the existing message (single-message lifecycle)
                 try:
-                    await self._discord_msg.edit(embed=embed, view=view)
+                    await self._discord_msg.edit(content="", embed=embed, view=view)
                 except discord.errors.NotFound:
                     # Message was deleted (e.g. initial command msg cleaned up by status update)
                     msg = await self._channel.send(embed=embed, view=view)
@@ -806,7 +811,7 @@ class MockMessage:
                     self._view = StopButtonView(gids)
                     view = self._view
 
-            await self._discord_msg.edit(embed=embed, view=view)
+            await self._discord_msg.edit(content="", embed=embed, view=view)
         except discord.NotFound:
             LOGGER.warning("Discord message not found for edit")
         except Exception as e:

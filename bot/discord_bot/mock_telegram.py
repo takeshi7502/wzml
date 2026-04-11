@@ -168,13 +168,17 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 continue
 
         if "Task By" in line:
-            # Extract ID -> Discord mention
-            val = re.sub(r'#ID(\d+)', r'<@\1>', line)
-            # Remove the "Task By" label itself
-            val = re.sub(r'\*?Task By\*?:?\s*', '', val, flags=re.IGNORECASE).strip()
-            val = val.replace("()", "").strip()
-            if val:
-                current_task_by = f"Task By {val}"
+            # Extract user ID -> Discord mention
+            uid_m = re.search(r'#ID(\d+)', line)
+            mention = f"<@{uid_m.group(1)}>" if uid_m else ""
+            # Extract source URL from [Link](url) or href
+            url_m = re.search(r'\[\w+\]\(([^)]+)\)', line)
+            if not url_m:
+                url_m = re.search(r'href=[\'"]([^\'"]+)[\'"]', line)
+            if url_m and mention:
+                current_task_by = f"Task By {mention} [Source Link]({url_m.group(1)})"
+            elif mention:
+                current_task_by = f"Task By {mention}"
             continue
 
         # Field lines: ┠ **Speed** → *value*
@@ -224,12 +228,9 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 embed.add_field(name="▬▬" * 15, value="\u200B", inline=False)
                 field_count += 1
 
-            # Task By line ABOVE task name (matching global header style)
-            if t_by:
-                embed.add_field(name=t_by[:256], value="\u200B", inline=False)
-                field_count += 1
-
-            embed.add_field(name=t_name[:256], value="\u200B", inline=False)
+            # Task name as field NAME, Task By as field VALUE (supports markdown links, no empty gap)
+            task_value = t_by if t_by else "\u200B"
+            embed.add_field(name=t_name[:256], value=task_value[:1024], inline=False)
             field_count += 1
             
             for fname, fvalue in fields:

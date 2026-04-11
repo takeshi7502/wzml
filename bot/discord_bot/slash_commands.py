@@ -139,6 +139,10 @@ def setup_commands(tree: app_commands.CommandTree):
         link="The Google Drive link to delete",
     )
     async def del_cmd(interaction: discord.Interaction, link: str):
+        if not Config.DISCORD_ADMIN_ID or interaction.user.id != Config.DISCORD_ADMIN_ID:
+            await interaction.response.send_message("⛔ **Permission Denied:** This command is restricted to Bot Admin.", ephemeral=True)
+            return
+            
         from ..modules.gd_delete import delete_file
         async def run_func(msg):
             await delete_file(None, msg)
@@ -173,9 +177,7 @@ def setup_commands(tree: app_commands.CommandTree):
             name="🛠️ Các Lệnh Cơ Bản",
             value="🔹 `/m <link>`: Tải link trực tiếp (direct link) hoặc Magnet Torrent về Google Drive.\n"
                   "🔹 `/qm <link>`: Chỉ định tải bằng động cơ qBittorrent cực khoẻ cho link Magnet/Torrent lớn.\n"
-                  "🔹 `/clone <link>`: Sao chép nhanh một link Google Drive vào vùng chứa Drive của kho.\n"
-                  "🔹 `/del <link>`: Xóa một file hoặc folder Google Drive trực tiếp qua Bot.\n"
-                  "🔹 `/stats`: Kiểm tra tài nguyên hệ thống (RAM, CPU, Dung lượng đĩa trống).",
+                  "🔹 `/clone <link>`: Sao chép nhanh một link Google Drive vào vùng chứa Drive của kho.",
             inline=False
         )
         embed.add_field(
@@ -188,6 +190,10 @@ def setup_commands(tree: app_commands.CommandTree):
 
     @tree.command(name="stats", description="Show bot system statistics")
     async def stats_cmd(interaction: discord.Interaction):
+        if not Config.DISCORD_ADMIN_ID or interaction.user.id != Config.DISCORD_ADMIN_ID:
+            await interaction.response.send_message("⛔ **Permission Denied:** This command is restricted to Bot Admin.", ephemeral=True)
+            return
+            
         import psutil
         import shutil
 
@@ -217,7 +223,7 @@ def setup_commands(tree: app_commands.CommandTree):
 
         await interaction.response.send_message(embed=embed)
 
-    @tree.command(name="a", description="Authorize/deauthorize a Discord server for mirror commands")
+    @tree.command(name="auth", description="Authorize/deauthorize a Discord server for mirror commands")
     @app_commands.describe(
         action="add or remove or list",
         server_id="The Discord server/channel ID to authorize (optional, defaults to current server)",

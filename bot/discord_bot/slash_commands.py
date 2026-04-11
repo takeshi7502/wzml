@@ -24,7 +24,7 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
         await interaction.followup.send(
             embed=discord.Embed(
                 title="⛔ Chưa Được Cấp Quyền",
-                description="Máy chủ/Kênh này chưa được cấp phép sử dụng Bot.\nVui lòng liên hệ Admin: `/auth add <server_id>`",
+                description="Máy chủ/Kênh này chưa được cấp phép sử dụng Bot.",
                 color=0xED4245,
             ),
             ephemeral=True,

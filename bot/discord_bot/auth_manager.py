@@ -24,7 +24,7 @@ _MONGO_DOC_ID = "discord_auth"
 async def _mongo_load() -> list:
     """Load authorized IDs from MongoDB. Returns list or None if unavailable."""
     try:
-        from ...core.config_manager import Config
+        from ..core.config_manager import Config
         if not Config.DATABASE_URL:
             return None
         from motor.motor_asyncio import AsyncIOMotorClient
@@ -43,7 +43,7 @@ async def _mongo_load() -> list:
 async def _mongo_save(ids: list):
     """Save authorized IDs to MongoDB."""
     try:
-        from ...core.config_manager import Config
+        from ..core.config_manager import Config
         if not Config.DATABASE_URL:
             return
         from motor.motor_asyncio import AsyncIOMotorClient
@@ -159,7 +159,7 @@ async def remove_authorized(server_id: int) -> bool:
 
 def is_authorized(guild_id: int = None, channel_id: int = None, user_id: int = None) -> bool:
     """Check if a guild, channel, or user is authorized."""
-    from ...core.config_manager import Config
+    from ..core.config_manager import Config
     # Discord Admin is always authorized
     if user_id and Config.DISCORD_ADMIN_ID and user_id == Config.DISCORD_ADMIN_ID:
         return True

@@ -36,16 +36,36 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
     if options:
         cmd_text += f" {options}"
 
-    # Send ONE initial message via followup (replaces the "thinking..." spinner)
+    # Check if there's an active status message for this channel
+    from .. import status_dict
+    
+    active_status = status_dict.get(channel.id)
+    existing_msg = None
+    if active_status and active_status.get("message") and getattr(active_status["message"], "_discord_msg", None):
+        existing_msg = active_status["message"]._discord_msg
+
     truncated = link[:80] + "..." if len(link) > 80 else link
-    initial_msg = await interaction.followup.send(
-        embed=discord.Embed(
-            title="🔄 Đang khởi tạo...",
-            description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
-            color=0xFEE75C,
-        ),
-        wait=True,
-    )
+
+    if existing_msg:
+        # A task is already running, insert seamlessly
+        await interaction.followup.send(
+            embed=discord.Embed(
+                description=f"✅ Đã nạp thành công **`{truncated}`** vào bảng tiến trình đang chạy!",
+                color=0x57F287,
+            ),
+            ephemeral=True,
+        )
+        initial_msg = existing_msg
+    else:
+        # Send ONE initial message via followup (replaces the "thinking..." spinner)
+        initial_msg = await interaction.followup.send(
+            embed=discord.Embed(
+                title="🔄 Đang khởi tạo...",
+                description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
+                color=0xFEE75C,
+            ),
+            wait=True,
+        )
 
     # Create mock with the Discord message already set
     mock_msg = MockMessage(
@@ -95,7 +115,7 @@ def _get_readable_time(seconds: float) -> str:
 def setup_commands(tree: app_commands.CommandTree):
     """Register all slash commands on the command tree."""
 
-    @tree.command(name="mirror", description="Mirror a link to cloud storage")
+    @tree.command(name="m", description="Mirror a link to cloud storage")
     @app_commands.describe(
         link="The URL/magnet/link to mirror",
         options="Additional options (e.g. -z for compress, -e for extract)",
@@ -106,7 +126,7 @@ def setup_commands(tree: app_commands.CommandTree):
             await Mirror(None, msg).new_event()
 
         await interaction.response.defer()
-        bot_loop.create_task(_execute_wzml_task(interaction, "mirror", link, options, run_func))
+        bot_loop.create_task(_execute_wzml_task(interaction, "m", link, options, run_func))
 
     @tree.command(name="qm", description="Mirror a link using qBittorrent to cloud storage")
     @app_commands.describe(

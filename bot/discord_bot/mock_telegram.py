@@ -206,19 +206,8 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
         if len(cleaned) > 4096:
             cleaned = cleaned[:4093] + "..."
         embed.description = cleaned or "Processing..."
-    elif len(tasks) == 1:
-        # Single task logic - Title is Task Name
-        task_name, fields = tasks[0]
-        if task_name:
-            clean_name = re.sub(r'^\d+\.\s*', '', task_name)
-            embed.title = clean_name[:253] + "..." if len(clean_name) > 256 else clean_name
-        for fname, fvalue in fields:
-            if field_count >= max_fields:
-                break
-            embed.add_field(name=fname, value=fvalue[:1021] + "..." if len(fvalue)>1024 else fvalue, inline=True)
-            field_count += 1
     else:
-        # Multi task logic - Generic Title, Task Names as field separators
+        # Task logic ALWAYS uses list structure, even for 1 task
         embed.title = f"🔄 Running Tasks ({len(tasks)})"
         for t_name, fields in tasks:
             if field_count >= max_fields - 3:
@@ -382,7 +371,7 @@ class StopButtonView(discord.ui.View):
         self.cancelled = False
         
         for i, gid in enumerate(gids):
-            label = "Stop 🔴" if len(gids) == 1 else f"Stop {i+1} 🔴"
+            label = "Cancel 🔴" if len(gids) == 1 else f"Cancel {i+1} 🔴"
             btn = discord.ui.Button(label=label, style=discord.ButtonStyle.danger, custom_id=f"stop_btn_{gid}")
             btn.callback = self.make_callback(gid, btn)
             self.add_item(btn)
@@ -520,8 +509,9 @@ class MockMessage:
                                 style=discord.ButtonStyle.link,
                             ))
 
-            # Extract GIDs for stop buttons
-            gids_matches = re.finditer(r"(?:Stop|stop).*?[→➔]\s*/.*_([a-zA-Z0-9]+)", text)
+            # Extract GIDs for stop buttons by stripping HTML tags first
+            clean_text_for_gids = re.sub(r'<[^>]+>', '', text)
+            gids_matches = re.finditer(r"(?:Stop|stop|Cancel|cancel).*?[→➔]\s*/.*_([a-zA-Z0-9]+)", clean_text_for_gids)
             gids = []
             for match in gids_matches:
                 if match.group(1) not in gids:
@@ -588,8 +578,9 @@ class MockMessage:
         if self._discord_msg is None:
             return
         try:
-            # Extract ALL GIDs for stop buttons
-            gids_matches = re.finditer(r"(?:Stop|stop).*?[→➔]\s*/.*_([a-zA-Z0-9]+)", text)
+            # Extract ALL GIDs for stop buttons by stripping HTML tags first
+            clean_text_for_gids = re.sub(r'<[^>]+>', '', text)
+            gids_matches = re.finditer(r"(?:Stop|stop|Cancel|cancel).*?[→➔]\s*/.*_([a-zA-Z0-9]+)", clean_text_for_gids)
             gids = []
             for match in gids_matches:
                 if match.group(1) not in gids:

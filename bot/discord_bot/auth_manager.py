@@ -9,7 +9,7 @@ from asyncio import Lock
 
 AUTH_FILE = "discord_auth.json"
 _auth_lock = Lock()
-_authorized_ids: set = set()
+_authorized_ids: list = []
 
 
 def _load_auth():
@@ -19,17 +19,22 @@ def _load_auth():
         try:
             with open(AUTH_FILE, "r") as f:
                 data = json.load(f)
-                _authorized_ids = set(data.get("authorized", []))
+                loaded = data.get("authorized", [])
+                # Preserve order, remove duplicates
+                _authorized_ids = []
+                for x in loaded:
+                    if x not in _authorized_ids:
+                        _authorized_ids.append(x)
         except Exception:
-            _authorized_ids = set()
+            _authorized_ids = []
     else:
-        _authorized_ids = set()
+        _authorized_ids = []
 
 
 def _save_auth():
     """Save authorized IDs to disk."""
     with open(AUTH_FILE, "w") as f:
-        json.dump({"authorized": list(_authorized_ids)}, f, indent=2)
+        json.dump({"authorized": _authorized_ids}, f, indent=2)
 
 
 def init_auth(config_servers: str):
@@ -42,7 +47,9 @@ def init_auth(config_servers: str):
             sid = sid.strip()
             if sid:
                 try:
-                    _authorized_ids.add(int(sid))
+                    val = int(sid)
+                    if val not in _authorized_ids:
+                        _authorized_ids.append(val)
                 except ValueError:
                     pass
     _save_auth()
@@ -53,7 +60,7 @@ async def add_authorized(server_id: int) -> bool:
     async with _auth_lock:
         if server_id in _authorized_ids:
             return False
-        _authorized_ids.add(server_id)
+        _authorized_ids.append(server_id)
         _save_auth()
         return True
 
@@ -63,7 +70,7 @@ async def remove_authorized(server_id: int) -> bool:
     async with _auth_lock:
         if server_id not in _authorized_ids:
             return False
-        _authorized_ids.discard(server_id)
+        _authorized_ids.remove(server_id)
         _save_auth()
         return True
 
@@ -86,3 +93,4 @@ def is_authorized(guild_id: int = None, channel_id: int = None, user_id: int = N
 def get_authorized_list() -> list:
     """Return list of all authorized IDs."""
     return list(_authorized_ids)
+

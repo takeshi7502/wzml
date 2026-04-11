@@ -267,7 +267,20 @@ def setup_commands(tree: app_commands.CommandTree):
         if action_val == "list":
             auth_list = get_authorized_list()
             if auth_list:
-                desc = "\n".join([f"• `{aid}`" for aid in auth_list])
+                lines = []
+                for idx, aid in enumerate(reversed(auth_list), 1):
+                    guild = interaction.client.get_guild(int(aid))
+                    if guild:
+                        name = guild.name
+                    else:
+                        channel = interaction.client.get_channel(int(aid))
+                        if channel:
+                            name = f"#{channel.name} (Channel)"
+                        else:
+                            name = "Unknown Server/Channel"
+                    lines.append(f"**{idx}.** {name} (`{aid}`)")
+                    
+                desc = f"**Tổng số Authorized:** {len(auth_list)}\n\n" + "\n".join(lines)
             else:
                 desc = "No servers/channels authorized."
             await interaction.response.send_message(

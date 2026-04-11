@@ -516,7 +516,7 @@ class TorrentSelectView(discord.ui.View):
                 child.disabled = True
             # Only update the VIEW (disable buttons). Do NOT set content — the status
             # monitor owns the message body and will update it on its next cycle.
-            await interaction.edit_message(view=self)
+            await interaction.message.edit(view=self)
 
             # Force-push the Running Tasks embed immediately (send_status_message is
             # skipped in qbit_download.py when listener.select=True, so we call it here).
@@ -542,8 +542,9 @@ class TorrentSelectView(discord.ui.View):
                 await task.task().cancel_task()
             for child in self.children:
                 child.disabled = True
-            await interaction.edit_original_response(
+            await interaction.message.edit(
                 content="🛑 **Đã huỷ tác vụ.**",
+                embed=None,
                 view=self,
             )
             self.stop()

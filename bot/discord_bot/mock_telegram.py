@@ -532,7 +532,13 @@ class MockMessage:
 
             if self._discord_msg:
                 # EDIT the existing message (single-message lifecycle)
-                await self._discord_msg.edit(embed=embed, view=view)
+                try:
+                    await self._discord_msg.edit(embed=embed, view=view)
+                except discord.errors.NotFound:
+                    # Message was deleted (e.g. initial command msg cleaned up by status update)
+                    msg = await self._channel.send(embed=embed, view=view)
+                    self._discord_msg = msg
+                
                 clone = MockMessage(self._channel, self._discord_user, text)
                 clone._discord_msg = self._discord_msg
                 clone.id = self._discord_msg.id

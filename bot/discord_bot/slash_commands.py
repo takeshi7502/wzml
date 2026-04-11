@@ -134,6 +134,19 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.defer()
         bot_loop.create_task(_execute_wzml_task(interaction, "clone", link, options, run_func))
 
+    @tree.command(name="ytdl", description="Tải video/audio từ YouTube hoặc 1000+ trang mạng khác lên Google Drive")
+    @app_commands.describe(
+        link="Link YouTube, TikTok, Facebook, v.v... muốn tải",
+        options="Tùy chọn bổ sung (VD: -s để chọn chất lượng, -z để nén)",
+    )
+    async def ytdl_cmd(interaction: discord.Interaction, link: str, options: str = ""):
+        from ..modules.ytdlp import YtDlp
+        async def run_func(msg):
+            await YtDlp(None, msg).new_event()
+
+        await interaction.response.defer()
+        bot_loop.create_task(_execute_wzml_task(interaction, "ytdl", link, options, run_func))
+
     @tree.command(name="del", description="Xoá vĩnh viễn tệp/thư mục trên Google Drive bằng Link")
     @app_commands.describe(
         link="Đường dẫn Google Drive muốn xoá vĩnh viễn",
@@ -177,6 +190,7 @@ def setup_commands(tree: app_commands.CommandTree):
             name="🛠️ Các lệnh cơ bản",
             value="🔹 `/m <link>`: Dùng link trực tiếp (direct link) của file muốn tải về.\n"
                   "🔹 `/qm <link>`: Dùng link Magnet/Torrent cho các file Torrent.\n"
+                  "🔹 `/ytdl <link>`: Tải video/audio từ YouTube, TikTok, Facebook, v.v...\n"
                   "🔹 `/clone <link>`: Sao chép nhanh một link Google Drive vào Drive của bot.",
             inline=False
         )

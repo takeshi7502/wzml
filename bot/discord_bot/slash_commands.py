@@ -40,8 +40,8 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
     truncated = link[:80] + "..." if len(link) > 80 else link
     initial_msg = await interaction.followup.send(
         embed=discord.Embed(
-            title="⏳ Processing...",
-            description=f"**Link:** `{truncated}`",
+            title="🔄 Đang khởi tạo...",
+            description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
             color=0xFEE75C,
         ),
         wait=True,

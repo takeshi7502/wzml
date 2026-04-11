@@ -521,7 +521,7 @@ class MockMessage:
                             ))
 
             # Extract GIDs for stop buttons
-            gids_matches = re.finditer(r"(?:/c(?:ancel)?_?ask_?|(?:Stop|stop).*?[→➔].*?/\w+_?)(\w+)", text)
+            gids_matches = re.finditer(r"(?:Stop|stop).*?[→➔]\s*/.*_([a-zA-Z0-9]+)", text)
             gids = []
             for match in gids_matches:
                 if match.group(1) not in gids:
@@ -589,7 +589,7 @@ class MockMessage:
             return
         try:
             # Extract ALL GIDs for stop buttons
-            gids_matches = re.finditer(r"(?:/c(?:ancel)?_?ask_?|(?:Stop|stop).*?[→➔].*?/\w+_?)(\w+)", text)
+            gids_matches = re.finditer(r"(?:Stop|stop).*?[→➔]\s*/.*_([a-zA-Z0-9]+)", text)
             gids = []
             for match in gids_matches:
                 if match.group(1) not in gids:

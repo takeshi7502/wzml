@@ -449,11 +449,12 @@ class TorrentSelectView(discord.ui.View):
       - "Cancel" → cancels the task
     """
 
-    def __init__(self, gid: str, task_hash: str, owner_id: int, is_qbit: bool = True):
+    def __init__(self, gid: str, task_hash: str, owner_id: int, pin: str = "", is_qbit: bool = True):
         super().__init__(timeout=None)
         self.gid = gid          # short GID (first 12 chars of hash for qbit)
         self.task_hash = task_hash  # full hash
         self.owner_id = owner_id
+        self.pin = pin          # 4-digit PIN for the web file selector
         self.is_qbit = is_qbit
 
     async def _check_owner(self, interaction: discord.Interaction) -> bool:
@@ -540,6 +541,22 @@ class TorrentSelectView(discord.ui.View):
         except Exception as e:
             await interaction.followup.send(f"Lỗi: {e}", ephemeral=True)
 
+    @discord.ui.button(label="📌 Xem Mã PIN", style=discord.ButtonStyle.secondary)
+    async def pin_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_owner(interaction):
+            return
+        if self.pin:
+            await interaction.response.send_message(
+                f"🔐 **Mã PIN để vào trang chọn file:** `{self.pin}`\n"
+                f"Nhập mã này vào ô **Enter PIN** trên trang web rồi bấm Submit.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "ℹ️ Không có mã PIN (Web Pincode không được bật trong config).",
+                ephemeral=True,
+            )
+
 
 def _build_torrent_select_view(markup, owner_id: int) -> discord.ui.View | None:
     """
@@ -554,9 +571,9 @@ def _build_torrent_select_view(markup, owner_id: int) -> discord.ui.View | None:
 
     url_btn = None
     done_data = None
-    cancel_data = None
     gid = None
     task_hash = None
+    pin = ""
 
     for row in markup.inline_keyboard:
         for btn in row:
@@ -571,12 +588,17 @@ def _build_torrent_select_view(markup, owner_id: int) -> discord.ui.View | None:
                     done_data = cb
                 elif parts[1] == "cancel":
                     gid = gid or parts[2]
-                    cancel_data = cb
+                elif parts[1] == "pin" and len(parts) >= 4:
+                    # sel pin {gid} {pin} — extract the 4-digit pin
+                    pin = parts[3]
 
     if done_data is None:
         return None  # not a torrent select markup
 
-    view = TorrentSelectView(gid=gid, task_hash=task_hash, owner_id=owner_id)
+    view = TorrentSelectView(gid=gid, task_hash=task_hash, owner_id=owner_id, pin=pin)
+    # Also try to derive PIN from hash if not found in callback (WEB_PINCODE=False case)
+    if not pin and task_hash:
+        view.pin = "".join([c for c in task_hash if c.isdigit()][:4])
     # Insert URL "Select Files" button at the front if present
     if url_btn:
         select_btn = discord.ui.Button(

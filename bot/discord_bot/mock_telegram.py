@@ -102,9 +102,9 @@ def _extract_task_by(html_text: str) -> tuple[str | None, str]:
     cleaned = re.sub(r'<b>\s*</b>', '', cleaned)
     cleaned = re.sub(r'<i>\s*</i>', '', cleaned)
 
-    # Build Discord mention
+    # Build Discord mention (only use link if it's a proper https URL of reasonable length)
     task_by = f"<@{uid}>"
-    if link_url:
+    if link_url and link_url.startswith("https://") and len(link_url) <= 200:
         task_by += f" **[Source Link]({link_url})**"
 
     return task_by, cleaned
@@ -178,8 +178,11 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             url_m = re.search(r'\[\w+\]\(([^)]+)\)', line)
             if not url_m:
                 url_m = re.search(r'href=[\'"]([^\'"]+)[\'"]', line)
-            if url_m and mention:
-                current_task_by = f"Task By {mention} [Source Link]({url_m.group(1)})"
+            # Only show as hyperlink if it's a proper https URL and not too long
+            # magnet: links can't be rendered by Discord as hyperlinks
+            src_url = url_m.group(1) if url_m else ""
+            if mention and src_url and src_url.startswith("https://") and len(src_url) <= 200:
+                current_task_by = f"Task By {mention} [Source Link]({src_url})"
             elif mention:
                 current_task_by = f"Task By {mention}"
             continue

@@ -23,8 +23,8 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
     if not is_authorized(guild_id=guild_id, channel_id=channel.id, user_id=user.id):
         await interaction.followup.send(
             embed=discord.Embed(
-                title="⛔ Not Authorized",
-                description="This server/channel is not authorized.\nAsk admin: `/a add <server_id>`",
+                title="⛔ Chưa Được Cấp Quyền",
+                description="Máy chủ/Kênh này chưa được cấp phép sử dụng Bot.\nVui lòng liên hệ Admin: `/auth add <server_id>`",
                 color=0xED4245,
             ),
             ephemeral=True,
@@ -64,7 +64,7 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
         LOGGER.error(f"Discord command error ({cmd_prefix}): {e}", exc_info=True)
         try:
             await initial_msg.edit(embed=discord.Embed(
-                title="❌ Error",
+                title="❌ Đã Xảy Ra Lỗi",
                 description=f"```{str(e)[:2000]}```",
                 color=0xED4245,
             ))
@@ -95,10 +95,10 @@ def _get_readable_time(seconds: float) -> str:
 def setup_commands(tree: app_commands.CommandTree):
     """Register all slash commands on the command tree."""
 
-    @tree.command(name="m", description="Mirror a link to cloud storage")
+    @tree.command(name="m", description="Tải link trực tiếp (direct link) hoặc Magnet/Torrent lên Cloud")
     @app_commands.describe(
-        link="The URL/magnet/link to mirror",
-        options="Additional options (e.g. -z for compress, -e for extract)",
+        link="Đường dẫn URL/magnet/torrent cần tải",
+        options="Tùy chọn bổ sung (VD: -z để nén, -e để giải nén)",
     )
     async def mirror_cmd(interaction: discord.Interaction, link: str, options: str = ""):
         from ..modules.mirror_leech import Mirror
@@ -108,10 +108,10 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.defer()
         bot_loop.create_task(_execute_wzml_task(interaction, "m", link, options, run_func))
 
-    @tree.command(name="qm", description="Mirror a link using qBittorrent to cloud storage")
+    @tree.command(name="qm", description="Tải link Torrent/Magnet lên Cloud cực khoẻ bằng động cơ qBittorrent")
     @app_commands.describe(
-        link="The torrent/magnet link to mirror via qBittorrent",
-        options="Additional options (e.g. -z for compress, -e for extract)",
+        link="Đường dẫn Torrent/Magnet cần tải",
+        options="Tùy chọn bổ sung (VD: -z để nén, -e để giải nén)",
     )
     async def qm_cmd(interaction: discord.Interaction, link: str, options: str = ""):
         from ..modules.mirror_leech import Mirror
@@ -121,10 +121,10 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.defer()
         bot_loop.create_task(_execute_wzml_task(interaction, "qm", link, options, run_func))
 
-    @tree.command(name="clone", description="Clone a Google Drive link or rclone path")
+    @tree.command(name="clone", description="Sao chép nhanh một link Google Drive vào vùng chứa Drive của kho")
     @app_commands.describe(
-        link="The Google Drive link/ID or rclone path to clone",
-        options="Additional options",
+        link="Link Google Drive (hoặc ID gốc) muốn nhân bản",
+        options="Tùy chọn bổ sung",
     )
     async def clone_cmd(interaction: discord.Interaction, link: str, options: str = ""):
         from ..modules.clone import Clone
@@ -134,13 +134,13 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.defer()
         bot_loop.create_task(_execute_wzml_task(interaction, "clone", link, options, run_func))
 
-    @tree.command(name="del", description="Delete a file/folder from Google Drive")
+    @tree.command(name="del", description="Xoá vĩnh viễn tệp/thư mục trên Google Drive bằng Link")
     @app_commands.describe(
-        link="The Google Drive link to delete",
+        link="Đường dẫn Google Drive muốn xoá vĩnh viễn",
     )
     async def del_cmd(interaction: discord.Interaction, link: str):
         if not Config.DISCORD_ADMIN_ID or interaction.user.id != Config.DISCORD_ADMIN_ID:
-            await interaction.response.send_message("⛔ **Permission Denied:** This command is restricted to Bot Admin.", ephemeral=True)
+            await interaction.response.send_message("⛔ **Lỗi Phân Quyền:** Lệnh này chỉ dành riêng cho Quản trị viên của Bot (Admin).", ephemeral=True)
             return
             
         from ..modules.gd_delete import delete_file
@@ -150,10 +150,10 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.defer()
         bot_loop.create_task(_execute_wzml_task(interaction, "del", link, "", run_func))
 
-    @tree.command(name="ping", description="Check bot latency")
+    @tree.command(name="ping", description="Kiểm tra độ trễ phản hồi của Bot (Ping)")
     async def ping_cmd(interaction: discord.Interaction):
         start = time()
-        await interaction.response.send_message("🏓 Calculating...", ephemeral=False)
+        await interaction.response.send_message("🏓 Đang tính toán tỷ lệ Phóng/Nhận tín hiệu...", ephemeral=False)
         bot_latency = (time() - start) * 1000
         ws_latency = interaction.client.latency * 1000
 
@@ -161,8 +161,8 @@ def setup_commands(tree: app_commands.CommandTree):
             title="🏓 Pong!",
             color=0x57F287,
         )
-        embed.add_field(name="Bot Latency", value=f"`{bot_latency:.2f}ms`", inline=True)
-        embed.add_field(name="WS Latency", value=f"`{ws_latency:.2f}ms`", inline=True)
+        embed.add_field(name="Độ Trễ Phản Hồi", value=f"`{bot_latency:.2f}ms`", inline=True)
+        embed.add_field(name="Kết nối Xong-Song (WS)", value=f"`{ws_latency:.2f}ms`", inline=True)
         await interaction.edit_original_response(content=None, embed=embed)
 
     @tree.command(name="about", description="Giới thiệu và hướng dẫn sử dụng Jin Mirror Bot")
@@ -188,10 +188,10 @@ def setup_commands(tree: app_commands.CommandTree):
         embed.set_footer(text="Trợ lý tự động WZML-Discord được vận hành bởi Takeshi.")
         await interaction.response.send_message(embed=embed)
 
-    @tree.command(name="stats", description="Show bot system statistics")
+    @tree.command(name="stats", description="Xem thông số kĩ thuật và Tài nguyên Máy Chủ (VPS)")
     async def stats_cmd(interaction: discord.Interaction):
         if not Config.DISCORD_ADMIN_ID or interaction.user.id != Config.DISCORD_ADMIN_ID:
-            await interaction.response.send_message("⛔ **Permission Denied:** This command is restricted to Bot Admin.", ephemeral=True)
+            await interaction.response.send_message("⛔ **Lỗi Phân Quyền:** Lệnh này chỉ dành riêng cho Quản trị viên của Bot (Admin).", ephemeral=True)
             return
             
         import psutil
@@ -212,21 +212,21 @@ def setup_commands(tree: app_commands.CommandTree):
         disk_free = disk.free / (1024 ** 3)
 
         embed = discord.Embed(
-            title="📊 Bot Statistics",
+            title="📊 Bảng Đo Lường Thông Số (VPS)",
             color=0x5865F2,
         )
-        embed.add_field(name="⏱ Uptime", value=f"`{uptime}`", inline=True)
-        embed.add_field(name="🖥 CPU", value=f"`{cpu_percent}%`", inline=True)
-        embed.add_field(name="🧠 RAM", value=f"`{ram_percent}%`", inline=True)
-        embed.add_field(name="💾 Disk", value=f"`{disk_used:.2f}GB/{disk_total:.2f}GB`", inline=True)
-        embed.add_field(name="📂 Free Space", value=f"`{disk_free:.2f}GB`", inline=True)
+        embed.add_field(name="⏱ Thời gian Bot On", value=f"`{uptime}`", inline=True)
+        embed.add_field(name="🖥 Trạng thái Máy", value=f"`{cpu_percent}% CPU`", inline=True)
+        embed.add_field(name="🧠 Nhiệm vụ Bộ Nhớ", value=f"`{ram_percent}% RAM`", inline=True)
+        embed.add_field(name="💾 Ổ Lưu trữ Tổng", value=f"`{disk_used:.2f}GB / {disk_total:.2f}GB`", inline=True)
+        embed.add_field(name="📂 Trống Dư ra", value=f"`{disk_free:.2f}GB`", inline=True)
 
         await interaction.response.send_message(embed=embed)
 
-    @tree.command(name="auth", description="Authorize/deauthorize a Discord server for mirror commands")
+    @tree.command(name="auth", description="Cấp hoặc Huỷ quyền sử dụng Bot cho Server/Channel")
     @app_commands.describe(
-        action="add or remove or list",
-        server_id="The Discord server/channel ID to authorize (optional, defaults to current server)",
+        action="Lựa chọn thêm (add), xóa (remove), hoặc liệt kê (list)",
+        server_id="ID (Mã Nhận Diện) của Server/Channel muốn cấp phép (tùy chọn, mặc định lấy của kênh hiện tại)",
     )
     @app_commands.choices(action=[
         app_commands.Choice(name="add", value="add"),
@@ -243,8 +243,8 @@ def setup_commands(tree: app_commands.CommandTree):
         if not Config.DISCORD_ADMIN_ID:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="⛔ Not Configured",
-                    description="DISCORD_ADMIN_ID is not set in config. Cannot verify admin.",
+                    title="⛔ Lỗi Cấu Hình System",
+                    description="Biến DISCORD_ADMIN_ID chưa được thiết lập trong Config. Không thể xác định được Admin.",
                     color=0xED4245,
                 ),
                 ephemeral=True,
@@ -254,8 +254,8 @@ def setup_commands(tree: app_commands.CommandTree):
         if user_id != Config.DISCORD_ADMIN_ID:
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="⛔ Permission Denied",
-                    description="Only the bot admin can manage authorization.",
+                    title="⛔ Lỗi Phân Quyền",
+                    description="Chỉ Admin Bot mới có thể quản lý việc cấp quyền.",
                     color=0xED4245,
                 ),
                 ephemeral=True,
@@ -275,17 +275,17 @@ def setup_commands(tree: app_commands.CommandTree):
                     else:
                         channel = interaction.client.get_channel(int(aid))
                         if channel:
-                            name = f"#{channel.name} (Channel)"
+                            name = f"#{channel.name} (Kênh)"
                         else:
-                            name = "Unknown Server/Channel"
+                            name = "Chưa nhận diện Kênh/Máy Chủ"
                     lines.append(f"**{idx}.** {name} (`{aid}`)")
                     
-                desc = f"**Tổng số Authorized:** {len(auth_list)}\n\n" + "\n".join(lines)
+                desc = f"**Tổng số vị trí đã Cấp Phép:** {len(auth_list)}\n\n" + "\n".join(lines)
             else:
-                desc = "No servers/channels authorized."
+                desc = "Hiện tại chưa có Kênh/Server nào được cấp phép."
             await interaction.response.send_message(
                 embed=discord.Embed(
-                    title="📋 Authorized List",
+                    title="📋 Danh Sách Cấp Phép",
                     description=desc,
                     color=0x5865F2,
                 ),
@@ -300,8 +300,8 @@ def setup_commands(tree: app_commands.CommandTree):
             except ValueError:
                 await interaction.response.send_message(
                     embed=discord.Embed(
-                        title="❌ Invalid ID",
-                        description="Please provide a valid numeric server/channel ID.",
+                        title="❌ ID Không Hợp Lệ",
+                        description="Vui lòng cung cấp ID Máy Chủ/Kênh là một chuỗi Chữ số.",
                         color=0xED4245,
                     ),
                     ephemeral=True,
@@ -314,34 +314,34 @@ def setup_commands(tree: app_commands.CommandTree):
             result = await add_authorized(target_id)
             if result:
                 embed = discord.Embed(
-                    title="✅ Authorized",
-                    description=f"ID `{target_id}` has been authorized for mirror commands.",
+                    title="✅ Bổ Sung Thành Công",
+                    description=f"ID `{target_id}` đã được cấp quyền sử dụng các nền tảng lệnh tải.",
                     color=0x57F287,
                 )
             else:
                 embed = discord.Embed(
-                    title="ℹ️ Already Authorized",
-                    description=f"ID `{target_id}` is already authorized.",
+                    title="ℹ️ Đã Tồn Tại",
+                    description=f"ID `{target_id}` đã được cấp quyền hợp lệ từ trước rồi.",
                     color=0xFEE75C,
                 )
         elif action_val == "remove":
             result = await remove_authorized(target_id)
             if result:
                 embed = discord.Embed(
-                    title="✅ Deauthorized",
-                    description=f"ID `{target_id}` has been removed from authorized list.",
+                    title="✅ Thu Hồi Quyền Hành",
+                    description=f"ID `{target_id}` đã gỡ bỏ khỏi thư mục danh sách được phép dùng mạng lưới Tải Về.",
                     color=0x57F287,
                 )
             else:
                 embed = discord.Embed(
-                    title="ℹ️ Not Found",
-                    description=f"ID `{target_id}` was not in the authorized list.",
+                    title="ℹ️ Lệnh Vô Hiệu Lực",
+                    description=f"ID `{target_id}` không tồn tại trong Cấu Trúc Khai Báo hoặc chưa từng Cấp Phép.",
                     color=0xFEE75C,
                 )
         else:
             embed = discord.Embed(
-                title="❌ Unknown Action",
-                description="Use `add`, `remove`, or `list`.",
+                title="❌ Thao Tác Từ Chối",
+                description="Bạn chỉ có thể sử dụng `add` , `remove` , `list` .",
                 color=0xED4245,
             )
 

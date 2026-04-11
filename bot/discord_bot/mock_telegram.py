@@ -399,7 +399,7 @@ class StopButtonView(discord.ui.View):
                 
                 if user_id != task_owner_id and user_id != Config.DISCORD_ADMIN_ID:
                     await interaction.response.send_message(
-                        "❌ Task này không phải của bạn!", ephemeral=True
+                        "❌ Nhiệm vụ này không phải của bạn!", ephemeral=True
                     )
                     return
 
@@ -407,7 +407,7 @@ class StopButtonView(discord.ui.View):
                 await obj.cancel_task()
                 
                 button.disabled = True
-                button.label = "Stopped ✓"
+                button.label = "Đã Dừng ✓"
                 button.style = discord.ButtonStyle.secondary
                 
                 if all(item.disabled for item in self.children if isinstance(item, discord.ui.Button) and item.style == discord.ButtonStyle.secondary):
@@ -417,7 +417,7 @@ class StopButtonView(discord.ui.View):
             except Exception as e:
                 try:
                     await interaction.response.send_message(
-                        f"Error: {e}", ephemeral=True
+                        f"Lỗi: {e}", ephemeral=True
                     )
                 except Exception:
                     pass

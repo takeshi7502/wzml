@@ -74,10 +74,10 @@ class TorrentManager:
 
     @classmethod
     async def aria2_remove(cls, download):
-        if download.get("status", "") in ["active", "paused", "waiting"]:
-            await cls.aria2.forceRemove(download.get("gid", ""))
-        else:
-            with suppress(Exception):
+        with suppress(Exception):
+            if download.get("status", "") in ["active", "paused", "waiting"]:
+                await cls.aria2.forceRemove(download.get("gid", ""))
+            else:
                 await cls.aria2.removeDownloadResult(download.get("gid", ""))
 
     @classmethod

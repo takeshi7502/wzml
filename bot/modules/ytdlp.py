@@ -500,7 +500,12 @@ class YtDlp(TaskListener):
             await self.run_multi(input_list, YtDlp)
 
         if not qual:
-            qual = await YtSelection(self).get_quality(result)
+            # Detect Discord mode: client is None and message is a MockMessage
+            if self.client is None and getattr(self.message, "is_mock", False):
+                from ..discord_bot.discord_yt_selection import DiscordYtSelection
+                qual = await DiscordYtSelection(self).get_quality(result)
+            else:
+                qual = await YtSelection(self).get_quality(result)
             if qual is None:
                 await self.remove_from_same_dir()
                 return

@@ -168,21 +168,21 @@ def setup_commands(tree: app_commands.CommandTree):
     @tree.command(name="about", description="Giới thiệu và hướng dẫn sử dụng Jin Mirror Bot")
     async def about_cmd(interaction: discord.Interaction):
         embed = discord.Embed(
-            title="👋 Giới thiệu Jin Mirror",
-            description="Chào mừng bạn đến với hệ thống Leech/Mirror chuyển đổi lưu trữ siêu tốc độ!\n\n"
-                        "Bot được thiết kế nhắm tới việc giải quyết vấn đề tải file từ các dịch vụ Cloud lưu trữ bị giới hạn băng thông chậm (VD: Terabox, Mega, Fshare, hoặc file Torrent/Magnet). Bot sẽ làm trung gian, tự động kéo file đó với tốc độ không giới hạn của VPS và đưa thẳng lên Google Drive. Từ đó, bạn chỉ việc tải về máy với tốc độ tối đa của Google Drive.",
+            title="👋 Giới thiệu về Jin Mirror",
+            description="Bot dùng để GetLink các thể loại khác sang Google Drive!\n"
+                        "Từ đó, giúp việc tải về máy với tốc độ tối đa của link Google Drive.\n\n",
             color=0x5865F2,
         )
         embed.add_field(
-            name="🛠️ Các Lệnh Cơ Bản",
-            value="🔹 `/m <link>`: Tải link trực tiếp (direct link) hoặc Magnet Torrent về Google Drive.\n"
-                  "🔹 `/qm <link>`: Chỉ định tải bằng động cơ qBittorrent cực khoẻ cho link Magnet/Torrent lớn.\n"
-                  "🔹 `/clone <link>`: Sao chép nhanh một link Google Drive vào vùng chứa Drive của kho.",
+            name="🛠️ Các lệnh cơ bản",
+            value="🔹 `/m <link>`: Dùng link trực tiếp (direct link) của file muốn tải về.\n"
+                  "🔹 `/qm <link>`: Dùng link Magnet/Torrent cho các file Torrent.\n"
+                  "🔹 `/clone <link>`: Sao chép nhanh một link Google Drive vào Drive của bot.",
             inline=False
         )
         embed.add_field(
             name="💡 Mẹo Nhỏ",
-            value="Trong lúc nhiều file tải xuống cùng lúc, bạn hoàn toàn có thể nhấn nút **Cancel 🔴** có đánh số thứ tự tương ứng ở phía dưới bảng trạng thái để huỷ tiến trình bất kỳ ngay lập tức.",
+            value="Trong lúc file đang tải xuống, bạn có thể nhấn nút **Cancel 🔴** để huỷ tiến trình bất kỳ ngay lập tức.",
             inline=False
         )
         embed.set_footer(text="Trợ lý tự động WZML-Discord được vận hành bởi Takeshi.")

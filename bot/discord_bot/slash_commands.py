@@ -36,36 +36,16 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
     if options:
         cmd_text += f" {options}"
 
-    # Check if there's an active status message for this channel
-    from .. import status_dict
-    
-    active_status = status_dict.get(channel.id)
-    existing_msg = None
-    if active_status and active_status.get("message") and getattr(active_status["message"], "_discord_msg", None):
-        existing_msg = active_status["message"]._discord_msg
-
+    # Send ONE initial message via followup (replaces the "thinking..." spinner)
     truncated = link[:80] + "..." if len(link) > 80 else link
-
-    if existing_msg:
-        # A task is already running, insert seamlessly
-        await interaction.followup.send(
-            embed=discord.Embed(
-                description=f"✅ Đã nạp thành công **`{truncated}`** vào bảng tiến trình đang chạy!",
-                color=0x57F287,
-            ),
-            ephemeral=True,
-        )
-        initial_msg = existing_msg
-    else:
-        # Send ONE initial message via followup (replaces the "thinking..." spinner)
-        initial_msg = await interaction.followup.send(
-            embed=discord.Embed(
-                title="🔄 Đang khởi tạo...",
-                description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
-                color=0xFEE75C,
-            ),
-            wait=True,
-        )
+    initial_msg = await interaction.followup.send(
+        embed=discord.Embed(
+            title="🔄 Đang khởi tạo...",
+            description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
+            color=0xFEE75C,
+        ),
+        wait=True,
+    )
 
     # Create mock with the Discord message already set
     mock_msg = MockMessage(

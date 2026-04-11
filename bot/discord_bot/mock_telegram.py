@@ -489,7 +489,7 @@ class MockMessage:
             is_task_complete = False
             uid = self._discord_user.id if self._discord_user else None
             
-            if "<b>Task By" in text or "Action Performed" in text or "Download Stopped" in text or "List Results" in text:
+            if "Action Performed" in text or "Download Stopped" in text or "already available" in text.lower() or "Limit Breached" in text or "Task Done" in text or "Task Size" in text:
                 embed, is_task_complete = _parse_completion_embed(text, uid, self.link)
             else:
                 embed = _parse_status_to_embed(text, self._gid, uid, self.link)

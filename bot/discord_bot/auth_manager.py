@@ -1,51 +1,103 @@
 """
 Persistent authorization manager for Discord bot.
-Stores authorized server/channel IDs to a JSON file so they survive restarts.
+Stores authorized server/channel IDs in MongoDB (same DB as the rest of WZML).
+Falls back to a local JSON file if MongoDB is not configured.
 """
 
 import json
 import os
 from asyncio import Lock
 
-# Anchor the auth file to the bot package directory so it survives CWD changes in Docker
-_HERE = os.path.dirname(os.path.abspath(__file__))
-AUTH_FILE = os.path.join(_HERE, "discord_auth.json")
 _auth_lock = Lock()
 _authorized_ids: list = []
 
+# Local file fallback (anchored to this module's directory)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_AUTH_FILE_FALLBACK = os.path.join(_HERE, "discord_auth.json")
 
-def _load_auth():
-    """Load authorized IDs from disk."""
-    global _authorized_ids
-    if os.path.exists(AUTH_FILE):
+# MongoDB collection name
+_MONGO_DOC_ID = "discord_auth"
+
+
+# ─── MongoDB helpers ────────────────────────────────────────────────
+
+async def _mongo_load() -> list:
+    """Load authorized IDs from MongoDB. Returns list or None if unavailable."""
+    try:
+        from ...core.config_manager import Config
+        if not Config.DATABASE_URL:
+            return None
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from pymongo.server_api import ServerApi
+        client = AsyncIOMotorClient(Config.DATABASE_URL, server_api=ServerApi("1"))
+        db = client.wzmlx
+        doc = await db.discord.auth.find_one({"_id": _MONGO_DOC_ID})
+        await client.close()
+        if doc:
+            return doc.get("ids", [])
+        return []
+    except Exception:
+        return None
+
+
+async def _mongo_save(ids: list):
+    """Save authorized IDs to MongoDB."""
+    try:
+        from ...core.config_manager import Config
+        if not Config.DATABASE_URL:
+            return
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from pymongo.server_api import ServerApi
+        client = AsyncIOMotorClient(Config.DATABASE_URL, server_api=ServerApi("1"))
+        db = client.wzmlx
+        await db.discord.auth.replace_one(
+            {"_id": _MONGO_DOC_ID}, {"_id": _MONGO_DOC_ID, "ids": ids}, upsert=True
+        )
+        await client.close()
+    except Exception:
+        pass
+
+
+# ─── Local file fallback helpers ────────────────────────────────────
+
+def _file_load() -> list:
+    if os.path.exists(_AUTH_FILE_FALLBACK):
         try:
-            with open(AUTH_FILE, "r") as f:
+            with open(_AUTH_FILE_FALLBACK, "r") as f:
                 data = json.load(f)
-                loaded = data.get("authorized", [])
-                # Preserve order, remove duplicates
-                _authorized_ids = []
-                for x in loaded:
-                    if x not in _authorized_ids:
-                        _authorized_ids.append(x)
+                return data.get("authorized", [])
         except Exception:
-            _authorized_ids = []
-    else:
-        _authorized_ids = []
+            pass
+    return []
 
 
-def _save_auth():
-    """Save authorized IDs to disk."""
-    with open(AUTH_FILE, "w") as f:
-        json.dump({"authorized": _authorized_ids}, f, indent=2)
+def _file_save(ids: list):
+    try:
+        with open(_AUTH_FILE_FALLBACK, "w") as f:
+            json.dump({"authorized": ids}, f, indent=2)
+    except Exception:
+        pass
 
+
+# ─── Public API ─────────────────────────────────────────────────────
 
 def init_auth(config_servers: str):
-    """Initialize auth from config + persistent file.
+    """
+    Synchronous init called at startup (before the event loop is running for discord).
+    Loads from local file only; MongoDB load happens in init_auth_async().
     config_servers: comma-separated server IDs from Config.DISCORD_AUTH_SERVERS
     """
     from .. import LOGGER
-    _load_auth()
-    LOGGER.info(f"Discord Auth: Loaded {len(_authorized_ids)} IDs from {AUTH_FILE}")
+    global _authorized_ids
+    # Load from local file first (fast, sync)
+    loaded = _file_load()
+    _authorized_ids = []
+    for x in loaded:
+        if x not in _authorized_ids:
+            _authorized_ids.append(x)
+    LOGGER.info(f"Discord Auth (file): Loaded {len(_authorized_ids)} IDs")
+
+    # Merge config servers
     if config_servers:
         for sid in config_servers.split(","):
             sid = sid.strip()
@@ -56,8 +108,31 @@ def init_auth(config_servers: str):
                         _authorized_ids.append(val)
                 except ValueError:
                     pass
-    _save_auth()
+    _file_save(_authorized_ids)
     LOGGER.info(f"Discord Auth: Total authorized IDs after init: {len(_authorized_ids)}")
+
+
+async def init_auth_async():
+    """
+    Async init — called from on_ready to load authorizations from MongoDB.
+    Merges MongoDB IDs with whatever is already in memory.
+    """
+    from .. import LOGGER
+    global _authorized_ids
+    async with _auth_lock:
+        mongo_ids = await _mongo_load()
+        if mongo_ids is None:
+            LOGGER.info("Discord Auth: MongoDB not available, using local file only.")
+            return
+        merged = list(_authorized_ids)
+        for mid in mongo_ids:
+            if mid not in merged:
+                merged.append(mid)
+        _authorized_ids = merged
+        # Sync back the merged list
+        await _mongo_save(_authorized_ids)
+        _file_save(_authorized_ids)
+        LOGGER.info(f"Discord Auth (MongoDB): Total authorized IDs: {len(_authorized_ids)}")
 
 
 async def add_authorized(server_id: int) -> bool:
@@ -66,7 +141,8 @@ async def add_authorized(server_id: int) -> bool:
         if server_id in _authorized_ids:
             return False
         _authorized_ids.append(server_id)
-        _save_auth()
+        await _mongo_save(_authorized_ids)
+        _file_save(_authorized_ids)
         return True
 
 
@@ -76,13 +152,14 @@ async def remove_authorized(server_id: int) -> bool:
         if server_id not in _authorized_ids:
             return False
         _authorized_ids.remove(server_id)
-        _save_auth()
+        await _mongo_save(_authorized_ids)
+        _file_save(_authorized_ids)
         return True
 
 
 def is_authorized(guild_id: int = None, channel_id: int = None, user_id: int = None) -> bool:
     """Check if a guild, channel, or user is authorized."""
-    from ..core.config_manager import Config
+    from ...core.config_manager import Config
     # Discord Admin is always authorized
     if user_id and Config.DISCORD_ADMIN_ID and user_id == Config.DISCORD_ADMIN_ID:
         return True
@@ -98,4 +175,3 @@ def is_authorized(guild_id: int = None, channel_id: int = None, user_id: int = N
 def get_authorized_list() -> list:
     """Return list of all authorized IDs."""
     return list(_authorized_ids)
-

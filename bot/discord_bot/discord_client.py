@@ -11,7 +11,7 @@ from discord import app_commands
 
 from .. import LOGGER, bot_loop
 from ..core.config_manager import Config
-from .auth_manager import init_auth
+from .auth_manager import init_auth, init_auth_async
 from .slash_commands import setup_commands
 
 # Enable discord.py library logging so errors show in log.txt
@@ -73,6 +73,9 @@ class DiscordBot:
             except Exception as e:
                 LOGGER.error(f"Discord Bot: Command sync FAILED: {e}")
                 LOGGER.error(traceback.format_exc())
+
+            # Load MongoDB auth IDs (async — must run after event loop is ready)
+            await init_auth_async()
 
             # Set presence
             await cls.client.change_presence(

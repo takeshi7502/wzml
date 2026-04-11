@@ -224,10 +224,12 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 embed.add_field(name="▬▬" * 15, value="\u200B", inline=False)
                 field_count += 1
 
-            # Task name as field header, Task By as description line above it
-            task_header = t_name[:256]
-            task_by_line = t_by or ""
-            embed.add_field(name=task_header, value=task_by_line if task_by_line else "\u200B", inline=False)
+            # Task By line ABOVE task name (matching global header style)
+            if t_by:
+                embed.add_field(name=t_by[:256], value="\u200B", inline=False)
+                field_count += 1
+
+            embed.add_field(name=t_name[:256], value="\u200B", inline=False)
             field_count += 1
             
             for fname, fvalue in fields:

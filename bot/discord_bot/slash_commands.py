@@ -195,6 +195,16 @@ def setup_commands(tree: app_commands.CommandTree):
             inline=False
         )
         embed.add_field(
+            name="🌐 /ytdl hỗ trợ những trang nào?",
+            value="Lệnh `/ytdl` dùng engine **yt-dlp** hỗ trợ hơn **1000+ trang web**, bao gồm:\n"
+                  "▪️ **Video:** YouTube, TikTok, Facebook, Instagram, Twitter/X, Bilibili, Vimeo, Dailymotion, Twitch, Rumble, Odysee...\n"
+                  "▪️ **Âm nhạc:** SoundCloud, Bandcamp, Mixcloud, Deezer (public)...\n"
+                  "▪️ **Tin tức / Khác:** Reddit, Imgur, Streamtape, Doodstream, Streamlare, Filemoon...\n"
+                  "▪️ **Playlist:** Hỗ trợ tải toàn bộ playlist YouTube, TikTok, v.v...\n"
+                  "📋 Danh sách đầy đủ: [yt-dlp supported sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md)",
+            inline=False
+        )
+        embed.add_field(
             name="💡 Mẹo Nhỏ",
             value="Trong lúc file đang tải xuống, bạn có thể nhấn nút **Cancel 🔴** để huỷ tiến trình bất kỳ ngay lập tức.",
             inline=False

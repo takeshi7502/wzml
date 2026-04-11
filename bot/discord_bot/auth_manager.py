@@ -7,7 +7,9 @@ import json
 import os
 from asyncio import Lock
 
-AUTH_FILE = "discord_auth.json"
+# Anchor the auth file to the bot package directory so it survives CWD changes in Docker
+_HERE = os.path.dirname(os.path.abspath(__file__))
+AUTH_FILE = os.path.join(_HERE, "discord_auth.json")
 _auth_lock = Lock()
 _authorized_ids: list = []
 
@@ -41,7 +43,9 @@ def init_auth(config_servers: str):
     """Initialize auth from config + persistent file.
     config_servers: comma-separated server IDs from Config.DISCORD_AUTH_SERVERS
     """
+    from .. import LOGGER
     _load_auth()
+    LOGGER.info(f"Discord Auth: Loaded {len(_authorized_ids)} IDs from {AUTH_FILE}")
     if config_servers:
         for sid in config_servers.split(","):
             sid = sid.strip()
@@ -53,6 +57,7 @@ def init_auth(config_servers: str):
                 except ValueError:
                     pass
     _save_auth()
+    LOGGER.info(f"Discord Auth: Total authorized IDs after init: {len(_authorized_ids)}")
 
 
 async def add_authorized(server_id: int) -> bool:

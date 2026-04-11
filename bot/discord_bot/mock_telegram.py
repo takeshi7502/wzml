@@ -168,12 +168,13 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 continue
 
         if "Task By" in line:
+            # Extract ID -> Discord mention
             val = re.sub(r'#ID(\d+)', r'<@\1>', line)
+            # Remove the "Task By" label itself
             val = re.sub(r'\*?Task By\*?:?\s*', '', val, flags=re.IGNORECASE).strip()
-            # Clean up the trailing () if link got omitted
             val = val.replace("()", "").strip()
             if val:
-                current_task_by = f"🙋 Người Yêu Cầu: {val}"
+                current_task_by = f"Task By {val}"
             continue
 
         # Field lines: ┠ **Speed** → *value*
@@ -223,7 +224,10 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 embed.add_field(name="▬▬" * 15, value="\u200B", inline=False)
                 field_count += 1
 
-            embed.add_field(name=t_name[:256], value=t_by or "\u200B", inline=False)
+            # Task name as field header, Task By as description line above it
+            task_header = t_name[:256]
+            task_by_line = t_by or ""
+            embed.add_field(name=task_header, value=task_by_line if task_by_line else "\u200B", inline=False)
             field_count += 1
             
             for fname, fvalue in fields:
@@ -232,10 +236,10 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 embed.add_field(name=fname, value=fvalue[:1021] + "..." if len(fvalue)>1024 else fvalue, inline=True)
                 field_count += 1
 
-    # Add Task By to the end of the description
+    # Add global Task By (from uid passed by slash command) as embed description
     if task_by_value:
         current_desc = embed.description or ""
-        embed.description = f"{current_desc}\n\n**Task By** {task_by_value}".strip()
+        embed.description = f"**Task By** {task_by_value}\n{current_desc}".strip()
 
     embed.timestamp = datetime.now(timezone.utc)
     return embed

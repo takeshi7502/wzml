@@ -133,16 +133,11 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     # Remove /cancel command lines
     text = re.sub(r"[┖┗]\s*Stop\s*[→➔].*", "", text)
 
-    # Extract Task By before HTML conversion
-    extracted_task_by, text = _extract_task_by(text)
-    
     task_by_value = None
     if uid:
         task_by_value = f"<@{uid}>"
         if link_url:
             task_by_value += _format_discord_link(link_url)
-    elif extracted_task_by:
-        task_by_value = extracted_task_by
 
     cleaned = _html_to_discord(text).strip()
 
@@ -152,6 +147,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     tasks = []
     current_task_name = ""
     current_task_fields = []
+    current_task_by = ""
 
     # Fields to skip in Discord
     skip_fields = {"In Mode", "Out Mode"}
@@ -161,18 +157,23 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
         if not line:
             continue
 
-        # Task name (numbered item: **1.** filename or just **filename**)
         if re.match(r"^\*\*\d+\.\*\*", line) or re.match(r"^\*\*.*\*\*$", line):
             # Only match if it's not a field line
             if "→" not in line and "Progress" not in line:
                 if current_task_name or current_task_fields:
-                    tasks.append((current_task_name, current_task_fields))
+                    tasks.append((current_task_name, current_task_fields, current_task_by))
                     current_task_fields = []
+                    current_task_by = ""
                 current_task_name = line.replace("**", "").strip()
                 continue
 
-        # Skip leftover "Task By" text that wasn't caught by _extract_task_by
         if "Task By" in line:
+            val = re.sub(r'#ID(\d+)', r'<@\1>', line)
+            val = re.sub(r'\*?Task By\*?:?\s*', '', val, flags=re.IGNORECASE).strip()
+            # Clean up the trailing () if link got omitted
+            val = val.replace("()", "").strip()
+            if val:
+                current_task_by = f"🙋 Người Yêu Cầu: {val}"
             continue
 
         # Field lines: ┠ **Speed** → *value*
@@ -196,7 +197,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             continue
 
     if current_task_name or current_task_fields:
-        tasks.append((current_task_name, current_task_fields))
+        tasks.append((current_task_name, current_task_fields, current_task_by))
 
     embed = discord.Embed(color=0x5865F2)
     max_fields = 25
@@ -209,7 +210,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
     else:
         # Task logic ALWAYS uses list structure, even for 1 task
         embed.title = f"🔄 Running Tasks ({len(tasks)})"
-        for t_name, fields in tasks:
+        for t_name, fields, t_by in tasks:
             if field_count >= max_fields - 3:
                 embed.add_field(name="...", value="More tasks hidden (Discord limit)", inline=False)
                 break
@@ -222,7 +223,7 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                 embed.add_field(name="▬▬" * 15, value="\u200B", inline=False)
                 field_count += 1
 
-            embed.add_field(name=t_name[:256], value="\u200B", inline=False)
+            embed.add_field(name=t_name[:256], value=t_by or "\u200B", inline=False)
             field_count += 1
             
             for fname, fvalue in fields:

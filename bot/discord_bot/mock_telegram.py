@@ -689,7 +689,8 @@ class MockMessage:
             is_task_complete = False
             uid = self._discord_user.id if self._discord_user else None
             
-            if "Action Performed" in text or "Download Stopped" in text or "already available" in text.lower() or "Limit Breached" in text or "Task Done" in text or "Task Size" in text:
+            is_terminal = "Action Performed" in text or "Download Stopped" in text or "already available" in text.lower() or "Limit Breached" in text or "Task Done" in text or "Task Size" in text
+            if is_terminal:
                 embed, is_task_complete = _parse_completion_embed(text, uid, self.link)
             else:
                 embed = _parse_status_to_embed(text, self._gid, uid, self.link)
@@ -736,13 +737,21 @@ class MockMessage:
                     view = self._view
 
             if self._discord_msg:
-                # EDIT the existing message (single-message lifecycle)
-                try:
-                    await self._discord_msg.edit(content="", embed=embed, view=view)
-                except discord.errors.NotFound:
-                    # Message was deleted (e.g. initial command msg cleaned up by status update)
+                active_id = MockMessage._active_channel_msg.get(self._channel.id)
+                # If this message is the ACTIVE status message, AND we are about to write a terminal message,
+                # we must NOT edit it, otherwise the status polling loop will instantly overwrite our terminal state.
+                # Instead, send a new message!
+                if is_terminal and active_id == self._discord_msg.id:
                     msg = await self._channel.send(embed=embed, view=view)
                     self._discord_msg = msg
+                else:
+                    # EDIT the existing message (single-message lifecycle)
+                    try:
+                        await self._discord_msg.edit(content="", embed=embed, view=view)
+                    except discord.errors.NotFound:
+                        # Message was deleted (e.g. initial command msg cleaned up by status update)
+                        msg = await self._channel.send(embed=embed, view=view)
+                        self._discord_msg = msg
                 
                 clone = MockMessage(self._channel, self._discord_user, text)
                 clone._discord_msg = self._discord_msg
@@ -821,19 +830,19 @@ class MockMessage:
             return str(e)
 
     async def delete(self):
-        """Delete the Discord message. Aborts if it's the active status message for the channel."""
+        """Delete the Discord message."""
         if not self._discord_msg:
             return
         try:
             active_id = MockMessage._active_channel_msg.get(self._channel.id)
             if active_id and active_id == self._discord_msg.id:
-                # Do not delete the global active status message for this channel!
-                return
+                del MockMessage._active_channel_msg[self._channel.id]
             await self._discord_msg.delete()
         except discord.NotFound:
             pass
         except Exception as e:
-            LOGGER.error(f"Discord delete error: {e}")
+            if "rate" not in str(e).lower():
+                LOGGER.error(f"Discord delete error: {e}")
 
     async def unpin(self):
         pass

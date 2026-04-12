@@ -36,16 +36,23 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
     if options:
         cmd_text += f" {options}"
 
-    # Send ONE initial message via followup (replaces the "thinking..." spinner)
+    # Send ONE initial message via channel.send (bot-owned, editable with bot token forever).
+    # NOTE: interaction.followup.send() creates a webhook-owned message — regular bot-token
+    # .edit() calls return 403 after the interaction token (15-min TTL) expires.
+    # We must use channel.send() so mock_msg._discord_msg.edit() works for the full task lifetime.
     truncated = link[:80] + "..." if len(link) > 80 else link
-    initial_msg = await interaction.followup.send(
+    initial_msg = await channel.send(
         embed=discord.Embed(
             title="🔄 Đang khởi tạo...",
             description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
             color=0xFEE75C,
         ),
-        wait=True,
     )
+    # Acknowledge the slash-command interaction so Discord doesn't show "failed"
+    try:
+        await interaction.followup.send(f"✅ Đã nhận lệnh! [Xem tiến trình]({initial_msg.jump_url})", ephemeral=True)
+    except Exception:
+        pass
 
     # Create mock with the Discord message already set
     mock_msg = MockMessage(

@@ -36,19 +36,34 @@ async def _execute_wzml_task(interaction: discord.Interaction, cmd_prefix: str, 
     if options:
         cmd_text += f" {options}"
 
-    # Send ONE initial message via interaction.followup (webhook-owned but always has permission).
-    # interaction.followup.send() bypasses channel SEND_MESSAGES permission check — the slash
-    # command invocation grants the bot the right to respond. Use wait=True to get the message
-    # object back so we can edit it throughout the task lifecycle.
+    # Send ONE initial message via channel.send (bot-owned, editable forever).
+    # interaction.followup.send() uses a webhook token that expires in 15 minutes,
+    # causing 401 Unauthorized errors on any long-running tasks!
+    # If the bot lacks permission in the channel, we catch it and inform the user.
     truncated = link[:80] + "..." if len(link) > 80 else link
-    initial_msg = await interaction.followup.send(
-        embed=discord.Embed(
-            title="🔄 Đang khởi tạo...",
-            description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
-            color=0xFEE75C,
-        ),
-        wait=True,
-    )
+    try:
+        initial_msg = await channel.send(
+            embed=discord.Embed(
+                title="🔄 Đang khởi tạo...",
+                description="⏳ Vui lòng chờ trong giây lát, Bot đang tiến hành xử lý yêu cầu của bạn...",
+                color=0xFEE75C,
+            ),
+        )
+        # Quietly acknowledge the slash command to prevent "Application did not respond"
+        try:
+            await interaction.followup.send(f"✅ Đã nhận lệnh! [Xem tiến trình]({initial_msg.jump_url})", ephemeral=True)
+        except Exception:
+            pass
+    except discord.Forbidden:
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="❌ Thiếu Quyền Hạn",
+                description="Bot cần quyền **Gửi tin nhắn** (Send Messages) và **Nhúng liên kết** (Embed Links) trong kênh này để có thể hiển thị tiến trình tải suốt thời gian dài.\n\n⚠️ Vui lòng cấp quyền cho Bot và thử lại.",
+                color=0xED4245,
+            ),
+            ephemeral=True
+        )
+        return
 
     # Create mock with the Discord message already set
     mock_msg = MockMessage(

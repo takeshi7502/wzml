@@ -182,9 +182,9 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             # magnet: links can't be rendered by Discord as hyperlinks
             src_url = url_m.group(1) if url_m else ""
             if mention and src_url and src_url.startswith("https://") and len(src_url) <= 200:
-                current_task_by = f"Task By {mention} [Source Link]({src_url})"
+                current_task_by = f"**Task By** {mention} [**Source Link**]({src_url})"
             elif mention:
-                current_task_by = f"Task By {mention}"
+                current_task_by = f"**Task By** {mention}"
             continue
 
         # Field lines: ┠ **Speed** → *value*
@@ -199,12 +199,10 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             continue
 
         # Progress bar
-        if "⬢" in line or "⬡" in line or "●" in line or "○" in line:
-            current_task_fields.append(("Progress", line))
-            continue
-            
-        if "─" in line and "%" in line:
-            current_task_fields.append(("Progress", line))
+        if "⬢" in line or "⬡" in line or "●" in line or "○" in line or ("─" in line and "%" in line):
+            # Clean up the leading box-drawing characters like '├ ' or '┟ '
+            clean_prog = re.sub(r"^[┟┠┖┗├└│┃|]+\s*", "", line)
+            current_task_fields.append(("Progress", clean_prog))
             continue
 
     if current_task_name or current_task_fields:
@@ -229,14 +227,19 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
             if not t_name:
                 t_name = "Unknown Task"
             
-            # Place the horizontal separator ABOVE the task name, except for the first task
-            if field_count > 0:
-                embed.add_field(name="▬▬" * 15, value="\u200B", inline=False)
-                field_count += 1
-
-            # Task name as field NAME, Task By as field VALUE (supports markdown links, no empty gap)
-            task_value = t_by if t_by else "\u200B"
-            embed.add_field(name=t_name[:256], value=task_value[:1024], inline=False)
+            # Task Field: place separator if > 1 task, otherwise invisible
+            field_name = "▬▬" * 15 if field_count > 0 else "\u200B"
+            
+            # Task By goes ABOVE Task Name inside field value
+            val_lines = []
+            actual_t_by = t_by if t_by else (f"**Task By** {task_by_value}" if task_by_value else "")
+            if actual_t_by:
+                val_lines.append(actual_t_by)
+            
+            # The t_name already contains the index (e.g. "1. YAAP...")
+            val_lines.append(f"**{t_name}**")
+            
+            embed.add_field(name=field_name, value="\n".join(val_lines)[:1024], inline=False)
             field_count += 1
             
             for fname, fvalue in fields:
@@ -244,11 +247,6 @@ def _parse_status_to_embed(text: str, gid: str = None, uid: int | None = None, l
                     break
                 embed.add_field(name=fname, value=fvalue[:1021] + "..." if len(fvalue)>1024 else fvalue, inline=True)
                 field_count += 1
-
-    # Add global Task By (from uid passed by slash command) as embed description
-    if task_by_value:
-        current_desc = embed.description or ""
-        embed.description = f"**Task By** {task_by_value}\n{current_desc}".strip()
 
     embed.timestamp = datetime.now(timezone.utc)
     return embed

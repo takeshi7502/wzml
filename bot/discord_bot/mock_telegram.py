@@ -762,16 +762,14 @@ class MockMessage:
                 clone.text = text
                 MockMessage._active_channel_msg[self._channel.id] = msg.id
 
-            # Auto-DM completion embed to user
+            # Auto-DM completion embed to user (best-effort, never fatal)
             if is_task_complete:
                 try:
                     dm_embed = embed.copy()
                     dm_embed.set_footer(text=f"From: {self._channel.guild.name}" if hasattr(self._channel, 'guild') and self._channel.guild else "")
-                    await self._discord_user.send(embed=dm_embed, view=view)
-                except discord.Forbidden:
-                    LOGGER.warning(f"Cannot DM user {self._discord_user} — DMs disabled")
-                except Exception as e:
-                    LOGGER.error(f"Discord DM error: {e}")
+                    await self._discord_user.send(embed=dm_embed)
+                except Exception:
+                    pass  # DMs closed or bot lacks access — silently ignore
 
             return clone
         except Exception as e:

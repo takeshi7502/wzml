@@ -184,7 +184,7 @@ def setup_commands(tree: app_commands.CommandTree):
     @tree.command(name="ping", description="Kiểm tra độ trễ phản hồi của Bot (Ping)")
     async def ping_cmd(interaction: discord.Interaction):
         start = time()
-        await interaction.response.send_message("🏓 Đang tính toán tỷ lệ Phóng/Nhận tín hiệu...", ephemeral=False)
+        await interaction.response.send_message("🏓 Calculating ping...", ephemeral=False)
         bot_latency = (time() - start) * 1000
         ws_latency = interaction.client.latency * 1000
 
@@ -192,8 +192,8 @@ def setup_commands(tree: app_commands.CommandTree):
             title="🏓 Pong!",
             color=0x57F287,
         )
-        embed.add_field(name="Độ Trễ Phản Hồi", value=f"`{bot_latency:.2f}ms`", inline=True)
-        embed.add_field(name="Kết nối Xong-Song (WS)", value=f"`{ws_latency:.2f}ms`", inline=True)
+        embed.add_field(name="Bot Latency", value=f"`{bot_latency:.2f}ms`", inline=True)
+        embed.add_field(name="API Latency (WS)", value=f"`{ws_latency:.2f}ms`", inline=True)
         await interaction.edit_original_response(content=None, embed=embed)
 
     @tree.command(name="about", description="Giới thiệu và hướng dẫn sử dụng Jin Mirror Bot")
@@ -254,14 +254,14 @@ def setup_commands(tree: app_commands.CommandTree):
         disk_free = disk.free / (1024 ** 3)
 
         embed = discord.Embed(
-            title="📊 Bảng Đo Lường Thông Số (VPS)",
+            title="📊 Bot & Server Stats",
             color=0x5865F2,
         )
-        embed.add_field(name="⏱ Thời gian Bot On", value=f"`{uptime}`", inline=True)
-        embed.add_field(name="🖥 Trạng thái Máy", value=f"`{cpu_percent}% CPU`", inline=True)
-        embed.add_field(name="🧠 Nhiệm vụ Bộ Nhớ", value=f"`{ram_percent}% RAM`", inline=True)
-        embed.add_field(name="💾 Ổ Lưu trữ Tổng", value=f"`{disk_used:.2f}GB / {disk_total:.2f}GB`", inline=True)
-        embed.add_field(name="📂 Trống Dư ra", value=f"`{disk_free:.2f}GB`", inline=True)
+        embed.add_field(name="⏱ Uptime", value=f"`{uptime}`", inline=True)
+        embed.add_field(name="🖥 CPU Usage", value=f"`{cpu_percent}% CPU`", inline=True)
+        embed.add_field(name="🧠 RAM Usage", value=f"`{ram_percent}% RAM`", inline=True)
+        embed.add_field(name="💾 Total Disk", value=f"`{disk_used:.2f}GB / {disk_total:.2f}GB`", inline=True)
+        embed.add_field(name="📂 Free Disk", value=f"`{disk_free:.2f}GB`", inline=True)
 
         await interaction.response.send_message(embed=embed)
 

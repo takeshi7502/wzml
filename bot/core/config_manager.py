@@ -38,6 +38,12 @@ class Config:
     PIXELDRAIN_KEY = ""
     PROTECTED_API = ""
     BUZZHEAVIER_API = ""
+    TELECLOUD_API_URL = "https://cloud.takeshi.dev/api/upload-api/upload"
+    TELECLOUD_API_KEY = ""
+    TELECLOUD_PATH = "/"
+    TELECLOUD_SHARE = True
+    TELECLOUD_ASYNC = False
+    TELECLOUD_OVERWRITE = False
     GDRIVE_ID = ""
     GD_DESP = "Uploaded with WZ Bot"
     AUTHOR_NAME = "WZML-X"

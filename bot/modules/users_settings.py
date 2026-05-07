@@ -49,6 +49,9 @@ uphoster_options = [
     "BUZZHEAVIER_TOKEN",
     "BUZZHEAVIER_FOLDER_ID",
     "PIXELDRAIN_KEY",
+    "TELECLOUD_API_URL",
+    "TELECLOUD_API_KEY",
+    "TELECLOUD_PATH",
 ]
 rclone_options = ["RCLONE_CONFIG", "RCLONE_PATH", "RCLONE_FLAGS"]
 gdrive_options = ["TOKEN_PICKLE", "GDRIVE_ID", "INDEX_URL"]
@@ -286,6 +289,21 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "String",
         "PixelDrain API Key",
         "<i>Send your PixelDrain API Key.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELECLOUD_API_URL": (
+        "String",
+        "TeleCloud Upload API endpoint.",
+        "<i>Send your TeleCloud upload API URL.</i> Example: <code>https://cloud.takeshi.dev/api/upload-api/upload</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELECLOUD_API_KEY": (
+        "String",
+        "TeleCloud Bearer API key.",
+        "<i>Send your TeleCloud API Key. Keep it secret.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELECLOUD_PATH": (
+        "String",
+        "Default TeleCloud destination path.",
+        "<i>Send TeleCloud upload path.</i> Example: <code>/</code> or <code>/Anime</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
     ),
 }
 
@@ -536,6 +554,7 @@ async def get_user_settings(from_user, stype="main"):
         buttons.data_button("Gofile Tools", f"userset {user_id} gofile")
         buttons.data_button("BuzzHeavier Tools", f"userset {user_id} buzzheavier")
         buttons.data_button("PixelDrain Tools", f"userset {user_id} pixeldrain")
+        buttons.data_button("TeleCloud Tools", f"userset {user_id} telecloud")
         buttons.data_button("Back", f"userset {user_id} back", "footer")
         buttons.data_button("Close", f"userset {user_id} close", "footer")
         btns = buttons.build_menu(1)
@@ -592,6 +611,43 @@ async def get_user_settings(from_user, stype="main"):
 ┃
 ┠ <b>BuzzHeavier Token</b> → <code>{bztoken}</code>
 ┖ <b>BuzzHeavier Folder ID</b> → <code>{bzfolder}</code>"""
+
+    elif stype == "telecloud":
+        buttons.data_button("TeleCloud API URL", f"userset {user_id} menu TELECLOUD_API_URL")
+        buttons.data_button("TeleCloud API Key", f"userset {user_id} menu TELECLOUD_API_KEY")
+        buttons.data_button("TeleCloud Path", f"userset {user_id} menu TELECLOUD_PATH")
+
+        share = user_dict.get("TELECLOUD_SHARE", Config.TELECLOUD_SHARE)
+        async_upload = user_dict.get("TELECLOUD_ASYNC", Config.TELECLOUD_ASYNC)
+        overwrite = user_dict.get("TELECLOUD_OVERWRITE", Config.TELECLOUD_OVERWRITE)
+        buttons.data_button(
+            f"{'Disable' if share else 'Enable'} Public Share",
+            f"userset {user_id} tog TELECLOUD_SHARE {'f' if share else 't'}",
+        )
+        buttons.data_button(
+            f"{'Disable' if async_upload else 'Enable'} Async Upload",
+            f"userset {user_id} tog TELECLOUD_ASYNC {'f' if async_upload else 't'}",
+        )
+        buttons.data_button(
+            f"{'Disable' if overwrite else 'Enable'} Overwrite",
+            f"userset {user_id} tog TELECLOUD_OVERWRITE {'f' if overwrite else 't'}",
+        )
+        buttons.data_button("Back", f"userset {user_id} back uphoster", "footer")
+        buttons.data_button("Close", f"userset {user_id} close", "footer")
+        btns = buttons.build_menu(1)
+
+        tc_url = user_dict.get("TELECLOUD_API_URL") or Config.TELECLOUD_API_URL or "None"
+        tc_key = "Exists" if (user_dict.get("TELECLOUD_API_KEY") or Config.TELECLOUD_API_KEY) else "None"
+        tc_path = user_dict.get("TELECLOUD_PATH") or Config.TELECLOUD_PATH or "/"
+        text = f"""⌬ <b>TeleCloud Settings :</b>
+┟ <b>Name</b> → {user_name}
+┃
+┠ <b>API URL</b> → <code>{tc_url}</code>
+┠ <b>API Key</b> → <b>{tc_key}</b>
+┠ <b>Path</b> → <code>{tc_path}</code>
+┠ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>
+┠ <b>Async Upload</b> → <b>{'Enabled' if async_upload else 'Disabled'}</b>
+┖ <b>Overwrite</b> → <b>{'Enabled' if overwrite else 'Disabled'}</b>"""
 
     elif stype == "gofile":
         buttons.data_button("Gofile Token", f"userset {user_id} menu GOFILE_TOKEN")
@@ -1267,6 +1323,7 @@ async def edit_user_settings(client, query):
         "gofile",
         "buzzheavier",
         "pixeldrain",
+        "telecloud",
         "ffset",
         "advanced",
         "gdrive",
@@ -1304,7 +1361,7 @@ async def edit_user_settings(client, query):
             )
 
         buttons = ButtonMaker()
-        for service in ["gofile", "buzzheavier", "pixeldrain"]:
+        for service in ["gofile", "buzzheavier", "pixeldrain", "telecloud"]:
             state = "✓" if service in selected_services else ""
             buttons.data_button(
                 f"{service.capitalize()} {state}",
@@ -1326,6 +1383,8 @@ async def edit_user_settings(client, query):
             back_to = "gdrive"
         elif data[3] in ["USER_TOKENS", "USE_DEFAULT_COOKIE"]:
             back_to = "general"
+        elif data[3].startswith("TELECLOUD_"):
+            back_to = "telecloud"
         else:
             back_to = "leech"
         await update_user_settings(query, stype=back_to)

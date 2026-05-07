@@ -328,6 +328,12 @@ class TaskConfig:
                             or Config.PIXELDRAIN_KEY
                         ):
                             raise ValueError("No PixelDrain Key Found!")
+                    elif service == "telecloud":
+                        if not (
+                            self.user_dict.get("TELECLOUD_API_KEY")
+                            or Config.TELECLOUD_API_KEY
+                        ):
+                            raise ValueError("No TeleCloud API Key Found!")
                 self.up_dest = "Uphoster"
 
             if not self.up_dest:

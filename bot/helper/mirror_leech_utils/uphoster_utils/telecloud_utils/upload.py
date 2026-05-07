@@ -10,7 +10,13 @@ from time import time
 from aiofiles.os import path as aiopath
 from aiohttp import ClientSession, FormData
 from aiohttp.client_exceptions import ContentTypeError
-from tenacity import RetryError, retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    RetryError,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from bot import user_data
 from bot.core.config_manager import Config
@@ -46,6 +52,8 @@ class TeleCloudUpload:
         self.total_folders = 0
         self.update_interval = 3
         self.is_uploading = True
+        self.is_server_processing = False
+        self.server_processing_file = ""
         self.results = []
 
         user_dict = user_data.get(self.listener.user_id, {})
@@ -54,6 +62,12 @@ class TeleCloudUpload:
             or Config.TELECLOUD_API_URL
             or "https://cloud.takeshi.dev/api/upload-api/upload"
         ).rstrip("/")
+        self.local_api_url = (
+            user_dict.get("TELECLOUD_LOCAL_API_URL")
+            or Config.TELECLOUD_LOCAL_API_URL
+            or ""
+        ).rstrip("/")
+        self.upload_api_url = self.local_api_url or self.api_url
         self.api_key = user_dict.get("TELECLOUD_API_KEY") or Config.TELECLOUD_API_KEY
         self.base_path = user_dict.get("TELECLOUD_PATH") or Config.TELECLOUD_PATH or "/"
         self.share = user_dict.get("TELECLOUD_SHARE", Config.TELECLOUD_SHARE)
@@ -74,9 +88,25 @@ class TeleCloudUpload:
     def __progress_callback(self, current):
         self.__processed_bytes += max(0, current - self.last_uploaded)
         self.last_uploaded = current
+        if current >= self.current_file_size:
+            self.is_server_processing = True
 
     async def progress(self):
         self.total_time += self.update_interval
+
+    def status_message(self):
+        current_file_size = getattr(self, "current_file_size", 0)
+        upload_finished = bool(
+            current_file_size
+            and self.last_uploaded >= max(current_file_size - 1024 * 1024, current_file_size * 0.999)
+        )
+        if self.is_server_processing or upload_finished:
+            return (
+                "Uploading to TeleCloud. Pls wait..."
+            )
+        if self.local_api_url:
+            return "Using local TeleCloud API endpoint."
+        return ""
 
     def _join_cloud_path(self, *parts):
         clean_parts = [str(part).strip("/") for part in parts if str(part).strip("/")]
@@ -105,9 +135,12 @@ class TeleCloudUpload:
         headers = {"Authorization": f"Bearer {self.api_key}"}
         mime_type = guess_type(file_path)[0] or "application/octet-stream"
         self.last_uploaded = 0
+        self.current_file_size = Path(file_path).stat().st_size
+        self.is_server_processing = False
+        self.server_processing_file = ospath.basename(file_path)
 
         with ProgressFileReader(file_path, self.__progress_callback) as file:
-            form = FormData()
+            form = FormData(quote_fields=False)
             form.add_field(
                 "file",
                 file,
@@ -123,8 +156,12 @@ class TeleCloudUpload:
                 form.add_field("overwrite", "true")
 
             async with ClientSession() as session:
-                async with session.post(self.api_url, headers=headers, data=form, timeout=None) as resp:
-                    return await self._parse_response(resp)
+                async with session.post(
+                    self.upload_api_url, headers=headers, data=form, timeout=None
+                ) as resp:
+                    result = await self._parse_response(resp)
+                    self.is_server_processing = False
+                    return result
 
     async def _upload_dir(self, input_directory):
         root_name = ospath.basename(input_directory.rstrip(ospath.sep))
@@ -148,6 +185,7 @@ class TeleCloudUpload:
     async def upload(self):
         try:
             LOGGER.info(f"TeleCloud Uploading: {self._path}")
+            LOGGER.info(f"TeleCloud API endpoint: {self.upload_api_url}")
             if not self.api_key:
                 raise ValueError("TeleCloud API key not configured! Please set it in user settings or config.")
             if not self.api_url:
@@ -162,14 +200,20 @@ class TeleCloudUpload:
                 self.results.append(result)
                 self.total_files = 1
                 mime_type = guess_type(self._path)[0] or "File"
-                link = result.get("direct_link") or result.get("share_link") or ""
+                link = {
+                    "share_link": result.get("share_link", ""),
+                    "direct_link": result.get("direct_link", ""),
+                }
             elif await aiopath.isdir(self._path):
                 await self._upload_dir(self._path)
                 mime_type = "Folder"
                 link = ""
                 for result in self.results:
                     if result.get("direct_link") or result.get("share_link"):
-                        link = result.get("direct_link") or result.get("share_link")
+                        link = {
+                            "share_link": result.get("share_link", ""),
+                            "direct_link": result.get("direct_link", ""),
+                        }
                         break
             else:
                 raise ValueError("Invalid file path!")

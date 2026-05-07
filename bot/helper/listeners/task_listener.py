@@ -488,9 +488,16 @@ class TaskListener(TaskConfig):
                             f"{service.capitalize()}: Error - {result['error']}\n"
                         )
                     elif result.get("link"):
-                        multi_links.append(
-                            (f"{service.capitalize()} Link", result["link"])
-                        )
+                        result_link = result["link"]
+                        if isinstance(result_link, dict):
+                            if share_link := result_link.get("share_link"):
+                                multi_links.append((f"{service.capitalize()} Share", share_link))
+                            if direct_link := result_link.get("direct_link"):
+                                multi_links.append((f"{service.capitalize()} Direct", direct_link))
+                        else:
+                            multi_links.append(
+                                (f"{service.capitalize()} Link", result_link)
+                            )
                 multi_link_msg = multi_link_msg.strip()
                 link = None  # Disable single link button logic
 

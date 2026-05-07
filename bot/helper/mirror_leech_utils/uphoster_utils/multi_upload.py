@@ -55,6 +55,12 @@ class MultiUphosterUpload:
             return 0
         return sum(u.processed_bytes for u in self.uploaders) / len(self.uploaders)
 
+    def status_message(self):
+        for uploader in self.uploaders:
+            if hasattr(uploader, "status_message") and (message := uploader.status_message()):
+                return message
+        return ""
+
     async def upload(self):
         tasks = [u.upload() for u in self.uploaders]
         await gather(*tasks)

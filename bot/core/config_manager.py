@@ -39,6 +39,7 @@ class Config:
     PROTECTED_API = ""
     BUZZHEAVIER_API = ""
     TELECLOUD_API_URL = "https://cloud.takeshi.dev/api/upload-api/upload"
+    TELECLOUD_LOCAL_API_URL = ""
     TELECLOUD_API_KEY = ""
     TELECLOUD_PATH = "/"
     TELECLOUD_SHARE = True

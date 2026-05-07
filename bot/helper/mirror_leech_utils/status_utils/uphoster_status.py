@@ -44,6 +44,13 @@ class UphosterStatus:
     def speed(self):
         return f"{get_readable_file_size(self._obj.speed)}/s"
 
+    def status_message(self):
+        if hasattr(self._obj, "status_message") and (message := self._obj.status_message()):
+            return message
+        if self._status == "up" and self.progress_raw() >= 99.9:
+            return "Uploading to TeleCloud. Pls wait..."
+        return ""
+
     def eta(self):
         try:
             seconds = (self._size - self._obj.processed_bytes) / self._obj.speed

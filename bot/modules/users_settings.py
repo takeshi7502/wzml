@@ -50,7 +50,6 @@ uphoster_options = [
     "BUZZHEAVIER_FOLDER_ID",
     "PIXELDRAIN_KEY",
     "TELECLOUD_API_URL",
-    "TELECLOUD_LOCAL_API_URL",
     "TELECLOUD_API_KEY",
     "TELECLOUD_PATH",
 ]
@@ -295,11 +294,6 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "String",
         "TeleCloud Upload API endpoint.",
         "<i>Send your TeleCloud upload API URL.</i> Example: <code>https://cloud.takeshi.dev/api/upload-api/upload</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
-    ),
-    "TELECLOUD_LOCAL_API_URL": (
-        "String",
-        "TeleCloud local/internal Upload API endpoint.",
-        "<i>Send local TeleCloud upload API URL if bot and TeleCloud run on the same VPS.</i> Example: <code>http://127.0.0.1:8080/api/upload-api/upload</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
     ),
     "TELECLOUD_API_KEY": (
         "String",
@@ -620,7 +614,6 @@ async def get_user_settings(from_user, stype="main"):
 
     elif stype == "telecloud":
         buttons.data_button("TeleCloud API URL", f"userset {user_id} menu TELECLOUD_API_URL")
-        buttons.data_button("TeleCloud Local URL", f"userset {user_id} menu TELECLOUD_LOCAL_API_URL")
         buttons.data_button("TeleCloud API Key", f"userset {user_id} menu TELECLOUD_API_KEY")
         buttons.data_button("TeleCloud Path", f"userset {user_id} menu TELECLOUD_PATH")
 
@@ -644,14 +637,12 @@ async def get_user_settings(from_user, stype="main"):
         btns = buttons.build_menu(1)
 
         tc_url = user_dict.get("TELECLOUD_API_URL") or Config.TELECLOUD_API_URL or "None"
-        tc_local_url = user_dict.get("TELECLOUD_LOCAL_API_URL") or Config.TELECLOUD_LOCAL_API_URL or "None"
         tc_key = "Exists" if (user_dict.get("TELECLOUD_API_KEY") or Config.TELECLOUD_API_KEY) else "None"
         tc_path = user_dict.get("TELECLOUD_PATH") or Config.TELECLOUD_PATH or "/"
         text = f"""⌬ <b>TeleCloud Settings :</b>
 ┟ <b>Name</b> → {user_name}
 ┃
 ┠ <b>API URL</b> → <code>{tc_url}</code>
-┠ <b>Local URL</b> → <code>{tc_local_url}</code>
 ┠ <b>API Key</b> → <b>{tc_key}</b>
 ┠ <b>Path</b> → <code>{tc_path}</code>
 ┠ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>

@@ -62,12 +62,7 @@ class TeleCloudUpload:
             or Config.TELECLOUD_API_URL
             or "https://cloud.takeshi.dev/api/upload-api/upload"
         ).rstrip("/")
-        self.local_api_url = (
-            user_dict.get("TELECLOUD_LOCAL_API_URL")
-            or Config.TELECLOUD_LOCAL_API_URL
-            or ""
-        ).rstrip("/")
-        self.upload_api_url = self.local_api_url or self.api_url
+        self.upload_api_url = self.api_url
         self.api_key = user_dict.get("TELECLOUD_API_KEY") or Config.TELECLOUD_API_KEY
         self.base_path = user_dict.get("TELECLOUD_PATH") or Config.TELECLOUD_PATH or "/"
         self.share = user_dict.get("TELECLOUD_SHARE", Config.TELECLOUD_SHARE)
@@ -104,8 +99,6 @@ class TeleCloudUpload:
             return (
                 "Uploading to TeleCloud. Pls wait..."
             )
-        if self.local_api_url:
-            return "Using local TeleCloud API endpoint."
         return ""
 
     def _join_cloud_path(self, *parts):
@@ -116,7 +109,13 @@ class TeleCloudUpload:
         try:
             data = await resp.json()
         except (ContentTypeError, JSONDecodeError):
-            data = {"error": await resp.text()}
+            text = (await resp.text()).strip()
+            content_type = resp.headers.get("Content-Type", "unknown")
+            if "<html" in text[:500].lower() or "<!doctype html" in text[:500].lower():
+                text = "TeleCloud returned an HTML page instead of JSON. Check TELECLOUD_API_URL; it must point to /api/upload-api/upload."
+            elif len(text) > 500:
+                text = f"{text[:500]}... [truncated]"
+            data = {"error": f"Non-JSON response ({content_type}): {text}"}
         if resp.status < 200 or resp.status >= 300:
             raise Exception(data.get("error") or f"HTTP {resp.status}: {data}")
         if data.get("error"):

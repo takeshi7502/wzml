@@ -13,6 +13,9 @@ from bot.helper.mirror_leech_utils.uphoster_utils.pixeldrain_utils.upload import
 from bot.helper.mirror_leech_utils.uphoster_utils.telecloud_utils.upload import (
     TeleCloudUpload,
 )
+from bot.helper.mirror_leech_utils.uphoster_utils.teldrive_utils.upload import (
+    TeldriveUpload,
+)
 
 LOGGER = getLogger(__name__)
 
@@ -43,6 +46,10 @@ class MultiUphosterUpload:
             elif service == "telecloud":
                 self.uploaders.append(
                     TeleCloudUpload(ProxyListener(self, "telecloud"), path)
+                )
+            elif service == "teldrive":
+                self.uploaders.append(
+                    TeldriveUpload(ProxyListener(self, "teldrive"), path)
                 )
 
     @property

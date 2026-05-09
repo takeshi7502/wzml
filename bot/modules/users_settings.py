@@ -52,6 +52,10 @@ uphoster_options = [
     "TELECLOUD_API_URL",
     "TELECLOUD_API_KEY",
     "TELECLOUD_PATH",
+    "TELDRIVE_API_URL",
+    "TELDRIVE_API_KEY",
+    "TELDRIVE_PATH",
+    "TELDRIVE_CHANNEL_ID",
 ]
 rclone_options = ["RCLONE_CONFIG", "RCLONE_PATH", "RCLONE_FLAGS"]
 gdrive_options = ["TOKEN_PICKLE", "GDRIVE_ID", "INDEX_URL"]
@@ -305,6 +309,26 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "Default TeleCloud destination path.",
         "<i>Send TeleCloud upload path.</i> Example: <code>/</code> or <code>/Anime</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
     ),
+    "TELDRIVE_API_URL": (
+        "String",
+        "Teldrive API base URL.",
+        "<i>Send your Teldrive site URL.</i> Example: <code>https://teledrive.takeshi.dev</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELDRIVE_API_KEY": (
+        "String",
+        "Teldrive Bearer API key or access token.",
+        "<i>Send your Teldrive API Key. Keep it secret.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELDRIVE_PATH": (
+        "String",
+        "Default Teldrive destination path.",
+        "<i>Send Teldrive upload path.</i> Example: <code>/</code> or <code>/Anime</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELDRIVE_CHANNEL_ID": (
+        "String",
+        "Optional Teldrive upload channel ID.",
+        "<i>Send Teldrive channel ID, or leave empty to use server default.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
 }
 
 
@@ -555,6 +579,7 @@ async def get_user_settings(from_user, stype="main"):
         buttons.data_button("BuzzHeavier Tools", f"userset {user_id} buzzheavier")
         buttons.data_button("PixelDrain Tools", f"userset {user_id} pixeldrain")
         buttons.data_button("TeleCloud Tools", f"userset {user_id} telecloud")
+        buttons.data_button("Teldrive Tools", f"userset {user_id} teldrive")
         buttons.data_button("Back", f"userset {user_id} back", "footer")
         buttons.data_button("Close", f"userset {user_id} close", "footer")
         btns = buttons.build_menu(1)
@@ -647,6 +672,40 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Path</b> → <code>{tc_path}</code>
 ┠ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>
 ┠ <b>Async Upload</b> → <b>{'Enabled' if async_upload else 'Disabled'}</b>
+┖ <b>Overwrite</b> → <b>{'Enabled' if overwrite else 'Disabled'}</b>"""
+
+    elif stype == "teldrive":
+        buttons.data_button("Teldrive API URL", f"userset {user_id} menu TELDRIVE_API_URL")
+        buttons.data_button("Teldrive API Key", f"userset {user_id} menu TELDRIVE_API_KEY")
+        buttons.data_button("Teldrive Path", f"userset {user_id} menu TELDRIVE_PATH")
+        buttons.data_button("Teldrive Channel ID", f"userset {user_id} menu TELDRIVE_CHANNEL_ID")
+
+        share = user_dict.get("TELDRIVE_SHARE", Config.TELDRIVE_SHARE)
+        buttons.data_button(
+            f"{'Disable' if share else 'Enable'} Public Share",
+            f"userset {user_id} tog TELDRIVE_SHARE {'f' if share else 't'}",
+        )
+        overwrite = user_dict.get("TELDRIVE_OVERWRITE", Config.TELDRIVE_OVERWRITE)
+        buttons.data_button(
+            f"{'Disable' if overwrite else 'Enable'} Overwrite",
+            f"userset {user_id} tog TELDRIVE_OVERWRITE {'f' if overwrite else 't'}",
+        )
+        buttons.data_button("Back", f"userset {user_id} back uphoster", "footer")
+        buttons.data_button("Close", f"userset {user_id} close", "footer")
+        btns = buttons.build_menu(1)
+
+        td_url = user_dict.get("TELDRIVE_API_URL") or Config.TELDRIVE_API_URL or "None"
+        td_key = "Exists" if (user_dict.get("TELDRIVE_API_KEY") or Config.TELDRIVE_API_KEY) else "None"
+        td_path = user_dict.get("TELDRIVE_PATH") or Config.TELDRIVE_PATH or "/"
+        td_channel = user_dict.get("TELDRIVE_CHANNEL_ID") or Config.TELDRIVE_CHANNEL_ID or "Default"
+        text = f"""⌬ <b>Teldrive Settings :</b>
+┟ <b>Name</b> → {user_name}
+┃
+┠ <b>API URL</b> → <code>{td_url}</code>
+┠ <b>API Key</b> → <b>{td_key}</b>
+┠ <b>Path</b> → <code>{td_path}</code>
+┠ <b>Channel ID</b> → <code>{td_channel}</code>
+┠ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>
 ┖ <b>Overwrite</b> → <b>{'Enabled' if overwrite else 'Disabled'}</b>"""
 
     elif stype == "gofile":
@@ -1324,6 +1383,7 @@ async def edit_user_settings(client, query):
         "buzzheavier",
         "pixeldrain",
         "telecloud",
+        "teldrive",
         "ffset",
         "advanced",
         "gdrive",
@@ -1361,7 +1421,7 @@ async def edit_user_settings(client, query):
             )
 
         buttons = ButtonMaker()
-        for service in ["gofile", "buzzheavier", "pixeldrain", "telecloud"]:
+        for service in ["gofile", "buzzheavier", "pixeldrain", "telecloud", "teldrive"]:
             state = "✓" if service in selected_services else ""
             buttons.data_button(
                 f"{service.capitalize()} {state}",
@@ -1385,6 +1445,8 @@ async def edit_user_settings(client, query):
             back_to = "general"
         elif data[3].startswith("TELECLOUD_"):
             back_to = "telecloud"
+        elif data[3].startswith("TELDRIVE_"):
+            back_to = "teldrive"
         else:
             back_to = "leech"
         await update_user_settings(query, stype=back_to)

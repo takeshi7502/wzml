@@ -334,6 +334,12 @@ class TaskConfig:
                             or Config.TELECLOUD_API_KEY
                         ):
                             raise ValueError("No TeleCloud API Key Found!")
+                    elif service == "teldrive":
+                        if not (
+                            self.user_dict.get("TELDRIVE_API_KEY")
+                            or Config.TELDRIVE_API_KEY
+                        ):
+                            raise ValueError("No Teldrive API Key Found!")
                 self.up_dest = "Uphoster"
 
             if not self.up_dest:

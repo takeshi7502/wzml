@@ -44,6 +44,12 @@ class Config:
     TELECLOUD_SHARE = True
     TELECLOUD_ASYNC = False
     TELECLOUD_OVERWRITE = False
+    TELDRIVE_API_URL = "https://teledrive.takeshi.dev"
+    TELDRIVE_API_KEY = ""
+    TELDRIVE_PATH = "/"
+    TELDRIVE_SHARE = True
+    TELDRIVE_OVERWRITE = True
+    TELDRIVE_CHANNEL_ID = ""
     GDRIVE_ID = ""
     GD_DESP = "Uploaded with WZ Bot"
     AUTHOR_NAME = "WZML-X"

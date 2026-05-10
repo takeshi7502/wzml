@@ -134,7 +134,10 @@ class TeldriveUpload:
     def _storage_chat_id(self):
         channel_id = str(self.channel_id or "").strip()
         if not channel_id:
-            raise ValueError("TELDRIVE_CHANNEL_ID is required for fast Teldrive uploads.")
+            raise ValueError(
+                "Bạn chưa set Teldrive Channel ID. Hãy vào /usetting → Uphoster → Teldrive Settings "
+                "và điền Channel ID của storage channel, sau đó thêm bot vào channel với quyền gửi file."
+            )
         if channel_id.startswith("-") or channel_id.startswith("@"):
             return int(channel_id) if channel_id.lstrip("-").isdigit() else channel_id
         return int(f"-100{channel_id}") if channel_id.isdigit() else channel_id
@@ -153,6 +156,40 @@ class TeldriveUpload:
                 f"{quote(file_id)}/{quote(file_name)}"
             )
         return f"{self.api_url}/api/files/{quote(file_id)}/{quote(file_name)}"
+
+    def _human_error(self, error):
+        raw = str(error)
+        upper = raw.upper()
+        if "CHANNEL_INVALID" in upper or "CHANNEL_PRIVATE" in upper or "PEER_ID_INVALID" in upper:
+            return (
+                "Không truy cập được Teldrive storage channel. "
+                f"Hãy kiểm tra Channel ID ({self.channel_id or 'chưa set'}) trong Teldrive Settings "
+                "và thêm bot vào channel đó với quyền gửi file. Nếu là channel private, bot bắt buộc phải là member/admin."
+            )
+        if "CHAT_ADMIN_REQUIRED" in upper or "USER_BANNED_IN_CHANNEL" in upper or "FORBIDDEN" in upper:
+            return (
+                "Bot chưa đủ quyền trong Teldrive storage channel. "
+                "Hãy cấp quyền admin hoặc ít nhất quyền gửi document/file cho bot."
+            )
+        if "FILE_PARTS_INVALID" in upper or "FILE_PART_INVALID" in upper:
+            return "Telegram từ chối file part. Hãy thử giảm Teldrive Split Size xuống 500MB hoặc 100MB rồi upload lại."
+        if "BIGGER THAN 2000 MIB" in upper or "FILE_TOO_BIG" in upper:
+            return "File/part vượt giới hạn Telegram Bot API 2000MiB. Hãy giảm Teldrive Split Size xuống 1GB, 500MB hoặc 100MB."
+        if "FLOOD" in upper:
+            return "Telegram đang giới hạn tốc độ upload (FloodWait). Hãy thử lại sau hoặc thêm helper bot để chia tải."
+        if "CONNECTION TIMEOUT" in upper or "TIMEOUT" in upper:
+            return "Kết nối tới Teldrive API bị timeout. Có thể server Teldrive đang chậm/quá tải, hãy thử lại sau."
+        if "TOKEN IS MALFORMED" in upper or "UNAUTHORIZED" in upper or "HTTP 401" in upper:
+            return "TELDRIVE_API_KEY/access token không hợp lệ hoặc đã hết hạn. Hãy cập nhật lại API key trong /usetting."
+        if "RECORD NOT FOUND" in upper or "HTTP 404" in upper:
+            return (
+                "Teldrive API báo không tìm thấy record. Thường do channel/path metadata chưa khớp, "
+                "storage channel trên web khác TELDRIVE_CHANNEL_ID, hoặc folder đích chưa đồng bộ. "
+                "Hãy kiểm tra lại Channel ID và thử upload lại."
+            )
+        if "HTML PAGE INSTEAD OF JSON" in upper:
+            return "TELDRIVE_API_URL không đúng endpoint Teldrive API hoặc bị redirect sang trang web HTML. Hãy kiểm tra lại URL."
+        return raw
 
     async def _parse_response(self, resp, allow_empty=False):
         if allow_empty and resp.status == 204:
@@ -228,6 +265,17 @@ class TeldriveUpload:
                 return folder
             await sleep(1 + attempt)
         raise Exception(f"Teldrive folder was created but not found: {folder_path}")
+
+    async def _ensure_folder_path(self, folder_path):
+        folder_path = self._join_cloud_path(folder_path)
+        if folder_path == "/":
+            return None
+        current = "/"
+        folder = None
+        for part in folder_path.strip("/").split("/"):
+            current = self._join_cloud_path(current, part)
+            folder = await self._create_or_get_folder(current)
+        return folder
 
     @retry(
         wait=wait_exponential(multiplier=2, min=4, max=8),
@@ -371,7 +419,7 @@ class TeldriveUpload:
                     await sleep(3)
                     self.last_uploaded = 0
                     continue
-                raise Exception(f"Teldrive Telegram upload failed for {self.current_file_name}: {err_str}")
+                raise Exception(self._human_error(f"Teldrive Telegram upload failed for {self.current_file_name}: {err_str}"))
 
     def _split_file_sync(self, file_path, split_dir):
         makedirs(split_dir, exist_ok=True)
@@ -449,10 +497,14 @@ class TeldriveUpload:
                     "skipped": True,
                 }
 
+        target_path = self._join_cloud_path(cloud_path)
+        if target_path != "/":
+            await self._ensure_folder_path(target_path)
+
         message_ids = await self._telegram_upload_parts(file_path)
         if not message_ids:
             return None
-        created = await self._create_file_from_messages(file_path, cloud_path, message_ids)
+        created = await self._create_file_from_messages(file_path, target_path, message_ids)
         self.is_server_processing = False
         share_data = await self._share_file_data(created.get("id")) if create_share else {}
         share_id = share_data.get("id", "")
@@ -471,7 +523,10 @@ class TeldriveUpload:
 
     async def _upload_dir(self, input_directory):
         root_name = ospath.basename(input_directory.rstrip(ospath.sep))
-        root_cloud_path = self._join_cloud_path(self.base_path, root_name)
+        base_cloud_path = self._join_cloud_path(self.base_path)
+        if base_cloud_path != "/":
+            await self._ensure_folder_path(base_cloud_path)
+        root_cloud_path = self._join_cloud_path(base_cloud_path, root_name)
         root_folder = await self._create_or_get_folder(root_cloud_path)
 
         upload_jobs = []
@@ -550,10 +605,11 @@ class TeldriveUpload:
             if isinstance(err, RetryError):
                 LOGGER.info(f"Total Attempts: {err.last_attempt.attempt_number}")
                 err = err.last_attempt.exception()
-            err = str(err).replace(">", "").replace("<", "")
-            LOGGER.error(err)
+            raw_err = str(err).replace(">", "").replace("<", "")
+            human_err = self._human_error(raw_err)
+            LOGGER.error(raw_err)
             self._is_errored = True
-            await self.listener.on_upload_error(err)
+            await self.listener.on_upload_error(human_err)
         finally:
             self.is_uploading = False
             if self._updater:

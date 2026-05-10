@@ -43,6 +43,8 @@ from ..helper.mirror_leech_utils.download_utils.rclone_download import (
 from ..helper.mirror_leech_utils.download_utils.telegram_download import (
     TelegramDownloadHelper,
 )
+from ..helper.mirror_leech_utils.download_utils.yt_dlp_download import YoutubeDLHelper
+from .ytdlp import YtSelection, extract_info
 from ..helper.telegram_helper.message_utils import (
     auto_delete_message,
     delete_links,
@@ -105,6 +107,7 @@ class Uphoster(TaskListener):
             "-bt": False,
             "-ut": False,
             "-yt": False,
+            "-ydl": False,
             "-i": 0,
             "-sp": 0,
             "link": "",
@@ -112,6 +115,7 @@ class Uphoster(TaskListener):
             "-m": "",
             "-meta": "",
             "-up": "",
+            "-opt": {},
             "-rcf": "",
             "-au": "",
             "-ap": "",
@@ -124,7 +128,15 @@ class Uphoster(TaskListener):
             "-ff": set(),
         }
 
+        use_ytdlp = "-ydl" in input_list
+        if use_ytdlp:
+            input_list = [part for part in input_list if part != "-ydl"]
+
         arg_parser(input_list[1:], args)
+        args["-ydl"] = use_ytdlp
+        LOGGER.info(
+            f"Uphoster args parsed: ydl={args['-ydl']} link={args['link']} raw={' '.join(input_list[1:])}"
+        )
 
         if Config.DISABLE_BULK and args.get("-b", False):
             await send_message(self.message, "Bulk downloads are currently disabled.")
@@ -175,6 +187,7 @@ class Uphoster(TaskListener):
         self.bot_trans = args["-bt"]
         self.user_trans = args["-ut"]
         self.is_yt = args["-yt"]
+        self.is_ytdlp = args["-ydl"]
         self.metadata_dict = self.default_metadata_dict.copy()
         self.audio_metadata_dict = self.audio_metadata_dict.copy()
         self.video_metadata_dict = self.video_metadata_dict.copy()
@@ -217,6 +230,12 @@ class Uphoster(TaskListener):
             if len(dargs) == 2:
                 seed_time = dargs[1] or None
             self.seed = True
+
+        try:
+            yt_opt = eval(args["-opt"]) if args["-opt"] else {}
+        except Exception as e:
+            LOGGER.error(e)
+            yt_opt = {}
 
         if not isinstance(is_bulk, bool):
             dargs = is_bulk.split(":")
@@ -372,6 +391,7 @@ class Uphoster(TaskListener):
             and file_ is None
             and not is_gdrive_id(self.link)
             and not is_mega_link(self.link)
+            and not self.is_ytdlp
         ):
             content_type = await get_content_type(self.link)
             if content_type is None or re_match(r"text/html|text/plain", content_type):
@@ -416,6 +436,29 @@ class Uphoster(TaskListener):
             await add_gd_download(self, path)
         elif is_mega_link(self.link):
             await add_mega_download(self, f"{path}/")
+        elif self.is_ytdlp:
+            opt = yt_opt or self.user_dict.get("YT_DLP_OPTIONS") or Config.YT_DLP_OPTIONS or {}
+            options = {"usenetrc": True}
+            if opt:
+                for key, value in opt.items():
+                    if key in ["postprocessors", "download_ranges"]:
+                        continue
+                    options[key] = value
+            options["playlist_items"] = "0"
+            try:
+                result = await sync_to_async(extract_info, self.link, options)
+            except Exception as e:
+                msg = str(e).replace("<", " ").replace(">", " ")
+                await send_message(self.message, f"{self.tag} {msg}")
+                await self.remove_from_same_dir()
+                return
+            qual = await YtSelection(self).get_quality(result)
+            if qual is None:
+                await self.remove_from_same_dir()
+                return
+            LOGGER.info(f"Downloading with YT-DLP for uphoster: {self.link}")
+            ydl = YoutubeDLHelper(self)
+            await ydl.add_download(path, qual, "entries" in result, opt)
         else:
             ussr = args["-au"]
             pssw = args["-ap"]

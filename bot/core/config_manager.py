@@ -49,7 +49,8 @@ class Config:
     TELDRIVE_PATH = "/"
     TELDRIVE_SHARE = True
     TELDRIVE_OVERWRITE = True
-    TELDRIVE_CHANNEL_ID = ""
+    TELDRIVE_CHANNEL_ID = "3944482974"
+    TELDRIVE_SPLIT_SIZE = "500mb"
     GDRIVE_ID = ""
     GD_DESP = "Uploaded with WZ Bot"
     AUTHOR_NAME = "WZML-X"

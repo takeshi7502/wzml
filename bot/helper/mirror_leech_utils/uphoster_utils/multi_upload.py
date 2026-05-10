@@ -98,7 +98,12 @@ class MultiUphosterUpload:
     async def _check_completion(self):
         if len(self.results) == len(self.uploaders):
             if len(self.failed) == len(self.uploaders):
-                await self.listener.on_upload_error("All uploads failed.")
+                errors = [
+                    f"{service}: {result.get('error', 'Unknown error')}"
+                    for service, result in self.results.items()
+                    if "error" in result
+                ]
+                await self.listener.on_upload_error("All uploads failed:\n" + "\n".join(errors))
             else:
                 successful_result = next(
                     v for k, v in self.results.items() if "error" not in v

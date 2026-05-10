@@ -1,11 +1,13 @@
-from asyncio import Semaphore, gather
+from asyncio import Semaphore, gather, sleep
 from io import BufferedReader
 from json import JSONDecodeError
 from logging import getLogger
 from mimetypes import guess_type
+from os import makedirs
 from os import path as ospath
 from os import walk as oswalk
 from pathlib import Path
+from shutil import rmtree
 from time import time
 from uuid import uuid4
 from urllib.parse import quote
@@ -23,7 +25,8 @@ from tenacity import (
 
 from bot import user_data
 from bot.core.config_manager import Config
-from bot.helper.ext_utils.bot_utils import SetInterval, sync_to_async
+from bot.core.tg_client import TgClient
+from bot.helper.ext_utils.bot_utils import SetInterval, get_size_bytes, sync_to_async
 
 LOGGER = getLogger(__name__)
 
@@ -76,6 +79,9 @@ class TeldriveUpload:
         self.share = user_dict.get("TELDRIVE_SHARE", Config.TELDRIVE_SHARE)
         self.overwrite = user_dict.get("TELDRIVE_OVERWRITE", Config.TELDRIVE_OVERWRITE)
         self.channel_id = user_dict.get("TELDRIVE_CHANNEL_ID") or Config.TELDRIVE_CHANNEL_ID
+        self.split_size = self._parse_split_size(
+            user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
+        )
         self.api_timeout = ClientTimeout(total=60, connect=15, sock_connect=15, sock_read=45)
         self.upload_timeout = ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=300)
 
@@ -101,7 +107,7 @@ class TeldriveUpload:
 
     def status_message(self):
         if self.is_server_processing:
-            return "Teldrive is saving upload to Telegram. Pls wait..."
+            return "Teldrive is registering Telegram storage metadata. Pls wait..."
         return ""
 
     def _api(self, route):
@@ -116,6 +122,22 @@ class TeldriveUpload:
     def _join_cloud_path(self, *parts):
         clean_parts = [str(part).strip("/") for part in parts if str(part).strip("/")]
         return "/" + "/".join(clean_parts) if clean_parts else "/"
+
+    def _parse_split_size(self, value):
+        try:
+            size = get_size_bytes(str(value)) if not isinstance(value, int) else value
+        except Exception:
+            size = 500 * 1024 * 1024
+        # Bot API hard limit is 2000 MiB; keep a small margin for safety.
+        return max(1, min(int(size), 1990 * 1024 * 1024))
+
+    def _storage_chat_id(self):
+        channel_id = str(self.channel_id or "").strip()
+        if not channel_id:
+            raise ValueError("TELDRIVE_CHANNEL_ID is required for fast Teldrive uploads.")
+        if channel_id.startswith("-") or channel_id.startswith("@"):
+            return int(channel_id) if channel_id.lstrip("-").isdigit() else channel_id
+        return int(f"-100{channel_id}") if channel_id.isdigit() else channel_id
 
     def _share_link(self, share_id):
         return f"{self.api_url}/share/{share_id}" if share_id else ""
@@ -293,6 +315,108 @@ class TeldriveUpload:
             async with session.post(self._api("files"), json=payload) as resp:
                 return await self._parse_response(resp)
 
+    async def _create_file_from_messages(self, file_path, cloud_path, message_ids):
+        payload = {
+            "uploadId": str(uuid4()),
+            "name": ospath.basename(file_path),
+            "type": "file",
+            "path": cloud_path,
+            "mimeType": guess_type(file_path)[0] or "application/octet-stream",
+            "size": Path(file_path).stat().st_size,
+            "encrypted": False,
+            "parts": [{"id": message_id, "salt": ""} for message_id in message_ids],
+        }
+        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
+            async with session.post(self._api("files"), json=payload) as resp:
+                return await self._parse_response(resp)
+
+    async def _create_file_from_message(self, file_path, cloud_path, message_id):
+        return await self._create_file_from_messages(file_path, cloud_path, [message_id])
+
+    async def _telegram_upload_file(self, file_path, display_name=None):
+        if self.listener.is_cancelled:
+            return None
+        self.last_uploaded = 0
+        self.current_file_size = Path(file_path).stat().st_size
+        self.current_file_name = display_name or ospath.basename(file_path)
+        self.is_server_processing = False
+        chat_id = self._storage_chat_id()
+        LOGGER.info(f"Teldrive fast upload to Telegram storage: {file_path} -> {chat_id}")
+        for attempt in range(3):
+            try:
+                msg = await TgClient.bot.send_document(
+                    chat_id=chat_id,
+                    document=file_path,
+                    file_name=self.current_file_name,
+                    disable_notification=True,
+                    progress=lambda current, total: self.__progress_callback(current),
+                )
+                self.is_server_processing = True
+                return msg
+            except Exception as e:
+                err_str = str(e)
+                if self.listener.is_cancelled:
+                    return None
+                # Handle Telegram FloodWait
+                if "FLOOD" in err_str.upper() or "flood" in err_str.lower():
+                    import re
+                    wait_match = re.search(r"(\d+)\s*seconds?", err_str)
+                    wait_time = int(wait_match.group(1)) if wait_match else 30
+                    LOGGER.warning(f"Teldrive FloodWait {wait_time}s for {self.current_file_name}")
+                    await sleep(wait_time + 2)
+                    self.last_uploaded = 0
+                    continue
+                if attempt < 2:
+                    LOGGER.warning(f"Teldrive send_document retry {attempt+1}/3: {err_str}")
+                    await sleep(3)
+                    self.last_uploaded = 0
+                    continue
+                raise Exception(f"Teldrive Telegram upload failed for {self.current_file_name}: {err_str}")
+
+    def _split_file_sync(self, file_path, split_dir):
+        makedirs(split_dir, exist_ok=True)
+        part_paths = []
+        base_name = ospath.basename(file_path)
+        with open(file_path, "rb") as src:
+            part_no = 1
+            while True:
+                chunk = src.read(self.split_size)
+                if not chunk:
+                    break
+                part_path = ospath.join(split_dir, f"{base_name}.part{part_no:03d}")
+                with open(part_path, "wb") as dst:
+                    dst.write(chunk)
+                part_paths.append(part_path)
+                part_no += 1
+        return part_paths
+
+    async def _telegram_upload_parts(self, file_path):
+        file_size = Path(file_path).stat().st_size
+        if file_size <= self.split_size:
+            msg = await self._telegram_upload_file(file_path)
+            return [msg.id] if msg else []
+
+        split_dir = ospath.join(ospath.dirname(file_path), f".teldrive_parts_{uuid4().hex}")
+        LOGGER.info(
+            f"Teldrive splitting {file_path} into {self.split_size} byte parts for Telegram storage"
+        )
+        try:
+            part_paths = await sync_to_async(self._split_file_sync, file_path, split_dir)
+            message_ids = []
+            total_parts = len(part_paths)
+            for index, part_path in enumerate(part_paths, start=1):
+                if self.listener.is_cancelled:
+                    return []
+                display_name = f"{ospath.basename(file_path)}.part{index:03d}"
+                LOGGER.info(f"Teldrive uploading part {index}/{total_parts}: {display_name}")
+                msg = await self._telegram_upload_file(part_path, display_name)
+                if not msg:
+                    return []
+                message_ids.append(msg.id)
+            return message_ids
+        finally:
+            await sync_to_async(rmtree, split_dir, True)
+
     async def _share_file_data(self, file_id):
         if not self.share or not file_id:
             return {}
@@ -325,11 +449,11 @@ class TeldriveUpload:
                     "skipped": True,
                 }
 
-        upload_id = str(uuid4())
-        upload_part = await self._upload_part(upload_id, file_path)
-        if not upload_part:
+        message_ids = await self._telegram_upload_parts(file_path)
+        if not message_ids:
             return None
-        created = await self._create_file(upload_id, file_path, cloud_path, upload_part)
+        created = await self._create_file_from_messages(file_path, cloud_path, message_ids)
+        self.is_server_processing = False
         share_data = await self._share_file_data(created.get("id")) if create_share else {}
         share_id = share_data.get("id", "")
         return {

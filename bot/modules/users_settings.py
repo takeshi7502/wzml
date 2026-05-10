@@ -56,6 +56,7 @@ uphoster_options = [
     "TELDRIVE_API_KEY",
     "TELDRIVE_PATH",
     "TELDRIVE_CHANNEL_ID",
+    "TELDRIVE_SPLIT_SIZE",
 ]
 rclone_options = ["RCLONE_CONFIG", "RCLONE_PATH", "RCLONE_FLAGS"]
 gdrive_options = ["TOKEN_PICKLE", "GDRIVE_ID", "INDEX_URL"]
@@ -328,6 +329,11 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "String",
         "Optional Teldrive upload channel ID.",
         "<i>Send Teldrive channel ID, or leave empty to use server default.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "TELDRIVE_SPLIT_SIZE": (
+        "String",
+        "Teldrive fast-import split size.",
+        "<i>Send Teldrive split size.</i> Example: <code>100mb</code>, <code>500mb</code>, <code>1gb</code>, <code>2gb</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
     ),
 }
 
@@ -690,6 +696,11 @@ async def get_user_settings(from_user, stype="main"):
             f"{'Disable' if overwrite else 'Enable'} Overwrite",
             f"userset {user_id} tog TELDRIVE_OVERWRITE {'f' if overwrite else 't'}",
         )
+        split_size = user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
+        buttons.data_button(
+            f"Split Size ⇋ {split_size.upper()}",
+            f"userset {user_id} teldrive_split",
+        )
         buttons.data_button("Back", f"userset {user_id} back uphoster", "footer")
         buttons.data_button("Close", f"userset {user_id} close", "footer")
         btns = buttons.build_menu(1)
@@ -698,6 +709,7 @@ async def get_user_settings(from_user, stype="main"):
         td_key = "Exists" if (user_dict.get("TELDRIVE_API_KEY") or Config.TELDRIVE_API_KEY) else "None"
         td_path = user_dict.get("TELDRIVE_PATH") or Config.TELDRIVE_PATH or "/"
         td_channel = user_dict.get("TELDRIVE_CHANNEL_ID") or Config.TELDRIVE_CHANNEL_ID or "Default"
+        td_split = user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
         text = f"""⌬ <b>Teldrive Settings :</b>
 ┟ <b>Name</b> → {user_name}
 ┃
@@ -705,6 +717,7 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>API Key</b> → <b>{td_key}</b>
 ┠ <b>Path</b> → <code>{td_path}</code>
 ┠ <b>Channel ID</b> → <code>{td_channel}</code>
+┠ <b>Split Size</b> → <b>{td_split.upper()}</b>
 ┠ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>
 ┖ <b>Overwrite</b> → <b>{'Enabled' if overwrite else 'Disabled'}</b>"""
 
@@ -1436,6 +1449,14 @@ async def edit_user_settings(client, query):
     elif data[2] == "menu":
         await query.answer()
         await get_menu(data[3], message, user_id)
+    elif data[2] == "teldrive_split":
+        values = ["100mb", "500mb", "1gb", "2gb"]
+        current = str(user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb").lower()
+        next_value = values[(values.index(current) + 1) % len(values)] if current in values else "500mb"
+        update_user_ldata(user_id, "TELDRIVE_SPLIT_SIZE", next_value)
+        await database.update_user_data(user_id)
+        await query.answer(f"Teldrive split size: {next_value.upper()}")
+        await update_user_settings(query, "teldrive")
     elif data[2] == "tog":
         await query.answer()
         update_user_ldata(user_id, data[3], data[4] == "t")

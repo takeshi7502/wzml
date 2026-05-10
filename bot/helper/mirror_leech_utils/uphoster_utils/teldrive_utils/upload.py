@@ -1,4 +1,4 @@
-from asyncio import Semaphore, gather, sleep
+from asyncio import Lock, sleep
 from io import BufferedReader
 from json import JSONDecodeError
 from logging import getLogger
@@ -29,6 +29,9 @@ from bot.core.tg_client import TgClient
 from bot.helper.ext_utils.bot_utils import SetInterval, get_size_bytes, sync_to_async
 
 LOGGER = getLogger(__name__)
+TELDRIVE_UPLOAD_LOADS = {"main": 0}
+TELDRIVE_UPLOAD_CURSOR = 0
+TELDRIVE_UPLOAD_LOCK = Lock()
 
 
 class ProgressFileReader(BufferedReader):
@@ -77,13 +80,13 @@ class TeldriveUpload:
         self.api_key = user_dict.get("TELDRIVE_API_KEY") or Config.TELDRIVE_API_KEY
         self.base_path = user_dict.get("TELDRIVE_PATH") or Config.TELDRIVE_PATH or "/"
         self.share = user_dict.get("TELDRIVE_SHARE", Config.TELDRIVE_SHARE)
-        self.overwrite = user_dict.get("TELDRIVE_OVERWRITE", Config.TELDRIVE_OVERWRITE)
         self.channel_id = user_dict.get("TELDRIVE_CHANNEL_ID") or Config.TELDRIVE_CHANNEL_ID
         self.split_size = self._parse_split_size(
             user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
         )
         self.api_timeout = ClientTimeout(total=60, connect=15, sock_connect=15, sock_read=45)
         self.upload_timeout = ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=300)
+        self._existing_files_cache = {}
 
     @property
     def speed(self):
@@ -107,7 +110,7 @@ class TeldriveUpload:
 
     def status_message(self):
         if self.is_server_processing:
-            return "Teldrive is registering Telegram storage metadata. Pls wait..."
+            return "Teldrive is uploading. Pls wait..."
         return ""
 
     def _api(self, route):
@@ -225,16 +228,19 @@ class TeldriveUpload:
                     raise
                 parent = self._join_cloud_path(*cloud_path.strip("/").split("/")[:-1])
                 name = cloud_path.rstrip("/").split("/")[-1]
-                return await self._find_file(name, "folder", parent)
+                return await self._find_file(name, "folder", cloud_path=parent)
 
-    async def _find_file(self, name, file_type, cloud_path):
+    async def _find_file(self, name, file_type, cloud_path=None, parent_id=None):
         params = {
             "name": name,
             "type": file_type,
-            "path": cloud_path,
             "operation": "find",
             "limit": 100,
         }
+        if parent_id:
+            params["parentId"] = parent_id
+        else:
+            params["path"] = cloud_path or "/"
         async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
             async with session.get(self._api("files"), params=params) as resp:
                 data = await self._parse_response(resp)
@@ -243,6 +249,63 @@ class TeldriveUpload:
             if item.get("name") == name and item.get("type") == file_type:
                 return item
         return items[0] if items else None
+
+    async def _list_existing_files_by_parent(self, parent_id):
+        if not parent_id:
+            return {}
+        if parent_id in self._existing_files_cache:
+            return self._existing_files_cache[parent_id]
+
+        LOGGER.info(f"Teldrive listing remote files once for parentId: {parent_id}")
+        existing = {}
+        cursor = ""
+        while True:
+            params = {
+                "operation": "list",
+                "parentId": parent_id,
+                "limit": 100,
+                "sort": "id",
+                "order": "asc",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
+                async with session.get(self._api("files"), params=params) as resp:
+                    data = await self._parse_response(resp)
+            for item in data.get("items") or []:
+                if item.get("type") == "file" and item.get("name"):
+                    existing[item["name"]] = item
+            cursor = (data.get("meta") or {}).get("nextCursor") or ""
+            if not cursor:
+                break
+
+        self._existing_files_cache[parent_id] = existing
+        LOGGER.info(
+            f"Teldrive cached {len(existing)} remote files for parentId: {parent_id}"
+        )
+        return existing
+
+    async def _get_existing_file_from_parent_cache(self, file_path, parent_id):
+        if not parent_id:
+            return None
+        existing = await self._list_existing_files_by_parent(parent_id)
+        remote = existing.get(ospath.basename(file_path))
+        if not remote:
+            return None
+        local_size = Path(file_path).stat().st_size
+        remote_size = remote.get("size")
+        if remote_size is not None and int(remote_size) != local_size:
+            LOGGER.info(
+                f"Teldrive existing name has different size, re-uploading: {remote.get('name')} ({remote_size} != {local_size})"
+            )
+            return None
+        return remote
+
+    def _remember_existing_file(self, file_data, parent_id):
+        if not parent_id or not file_data or not file_data.get("name"):
+            return
+        if parent_id in self._existing_files_cache:
+            self._existing_files_cache[parent_id][file_data["name"]] = file_data
 
     async def _delete_file(self, file_id):
         if not file_id:
@@ -254,17 +317,32 @@ class TeldriveUpload:
             ) as resp:
                 await self._parse_response(resp, allow_empty=True)
 
+    async def _create_folder(self, folder_name, parent_id=None, parent_path="/"):
+        payload = {
+            "name": folder_name,
+            "type": "folder",
+        }
+        if parent_id:
+            payload["parentId"] = parent_id
+        else:
+            payload["path"] = parent_path or "/"
+        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
+            async with session.post(self._api("files"), json=payload) as resp:
+                return await self._parse_response(resp)
+
     async def _create_or_get_folder(self, folder_path):
         parent_path = self._join_cloud_path(*folder_path.strip("/").split("/")[:-1])
         folder_name = folder_path.rstrip("/").split("/")[-1]
         LOGGER.info(f"Teldrive mkdir: {folder_path}")
-        await self._mkdir(folder_path)
-        for attempt in range(5):
-            folder = await self._find_file(folder_name, "folder", parent_path)
+        try:
+            return await self._create_folder(folder_name, parent_path=parent_path)
+        except Exception as err:
+            if "exist" not in str(err).lower() and "duplicate" not in str(err).lower():
+                raise
+            folder = await self._find_file(folder_name, "folder", cloud_path=parent_path)
             if folder:
                 return folder
-            await sleep(1 + attempt)
-        raise Exception(f"Teldrive folder was created but not found: {folder_path}")
+            raise
 
     async def _ensure_folder_path(self, folder_path):
         folder_path = self._join_cloud_path(folder_path)
@@ -272,9 +350,12 @@ class TeldriveUpload:
             return None
         current = "/"
         folder = None
+        parent_id = None
         for part in folder_path.strip("/").split("/"):
             current = self._join_cloud_path(current, part)
-            folder = await self._create_or_get_folder(current)
+            parent_path = self._join_cloud_path(*current.strip("/").split("/")[:-1])
+            folder = await self._create_folder(part, parent_id=parent_id, parent_path=parent_path)
+            parent_id = folder.get("id")
         return folder
 
     @retry(
@@ -363,23 +444,61 @@ class TeldriveUpload:
             async with session.post(self._api("files"), json=payload) as resp:
                 return await self._parse_response(resp)
 
-    async def _create_file_from_messages(self, file_path, cloud_path, message_ids):
+    async def _create_file_from_messages(self, file_path, cloud_path, message_ids, parent_id=None):
         payload = {
             "uploadId": str(uuid4()),
             "name": ospath.basename(file_path),
             "type": "file",
-            "path": cloud_path,
             "mimeType": guess_type(file_path)[0] or "application/octet-stream",
             "size": Path(file_path).stat().st_size,
             "encrypted": False,
             "parts": [{"id": message_id, "salt": ""} for message_id in message_ids],
         }
+        if parent_id:
+            payload["parentId"] = parent_id
+            LOGGER.info(
+                f"Teldrive create file metadata by parentId: {payload['name']} -> {parent_id}"
+            )
+        else:
+            payload["path"] = cloud_path
+            LOGGER.info(
+                f"Teldrive create file metadata by path: {payload['name']} -> {cloud_path}"
+            )
         async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
             async with session.post(self._api("files"), json=payload) as resp:
                 return await self._parse_response(resp)
 
-    async def _create_file_from_message(self, file_path, cloud_path, message_id):
-        return await self._create_file_from_messages(file_path, cloud_path, [message_id])
+    @staticmethod
+    async def _pick_upload_clients():
+        global TELDRIVE_UPLOAD_CURSOR
+        async with TELDRIVE_UPLOAD_LOCK:
+            clients = []
+            for no, client in TgClient.helper_bots.items():
+                clients.append((no, client))
+                TELDRIVE_UPLOAD_LOADS.setdefault(no, 0)
+            if TgClient.bot:
+                clients.append(("main", TgClient.bot))
+                TELDRIVE_UPLOAD_LOADS.setdefault("main", 0)
+            if not clients:
+                raise Exception("No Telegram client available for Teldrive upload")
+
+            clients.sort(key=lambda item: str(item[0]))
+            least_load = min(TELDRIVE_UPLOAD_LOADS.get(no, 0) for no, _ in clients)
+            preferred = [
+                item for item in clients if TELDRIVE_UPLOAD_LOADS.get(item[0], 0) == least_load
+            ]
+            start = TELDRIVE_UPLOAD_CURSOR % len(preferred)
+            ordered = preferred[start:] + preferred[:start]
+            TELDRIVE_UPLOAD_CURSOR = (TELDRIVE_UPLOAD_CURSOR + 1) % len(preferred)
+            ordered_keys = {no for no, _ in ordered}
+            ordered.extend(item for item in clients if item[0] not in ordered_keys)
+            return ordered
+
+    @staticmethod
+    def _client_name(client_no, client):
+        if client_no == "main":
+            return f"main @{getattr(client.me, 'username', 'bot')}"
+        return f"helper-{client_no} @{getattr(client.me, 'username', 'bot')}"
 
     async def _telegram_upload_file(self, file_path, display_name=None):
         if self.listener.is_cancelled:
@@ -390,36 +509,73 @@ class TeldriveUpload:
         self.is_server_processing = False
         chat_id = self._storage_chat_id()
         LOGGER.info(f"Teldrive fast upload to Telegram storage: {file_path} -> {chat_id}")
-        for attempt in range(3):
-            try:
-                msg = await TgClient.bot.send_document(
-                    chat_id=chat_id,
-                    document=file_path,
-                    file_name=self.current_file_name,
-                    disable_notification=True,
-                    progress=lambda current, total: self.__progress_callback(current),
-                )
-                self.is_server_processing = True
-                return msg
-            except Exception as e:
-                err_str = str(e)
-                if self.listener.is_cancelled:
-                    return None
-                # Handle Telegram FloodWait
-                if "FLOOD" in err_str.upper() or "flood" in err_str.lower():
-                    import re
-                    wait_match = re.search(r"(\d+)\s*seconds?", err_str)
-                    wait_time = int(wait_match.group(1)) if wait_match else 30
-                    LOGGER.warning(f"Teldrive FloodWait {wait_time}s for {self.current_file_name}")
-                    await sleep(wait_time + 2)
+        clients = await self._pick_upload_clients()
+        last_error = None
+        for client_no, client in clients:
+            client_name = self._client_name(client_no, client)
+            for attempt in range(3):
+                try:
+                    TELDRIVE_UPLOAD_LOADS[client_no] = TELDRIVE_UPLOAD_LOADS.get(client_no, 0) + 1
+                    LOGGER.info(
+                        f"Teldrive upload via {client_name} attempt {attempt + 1}/3: {self.current_file_name}"
+                    )
+                    msg = await client.send_document(
+                        chat_id=chat_id,
+                        document=file_path,
+                        file_name=self.current_file_name,
+                        disable_notification=True,
+                        progress=lambda current, total: self.__progress_callback(current),
+                    )
+                    self.is_server_processing = True
+                    LOGGER.info(f"Teldrive uploaded via {client_name}: message {msg.id}")
+                    return msg
+                except Exception as e:
+                    err_str = str(e)
+                    last_error = err_str
+                    if self.listener.is_cancelled:
+                        return None
+                    upper_err = err_str.upper()
+                    if "FLOOD" in upper_err:
+                        import re
+                        wait_match = re.search(r"(\d+)\s*seconds?", err_str)
+                        wait_time = int(wait_match.group(1)) if wait_match else 30
+                        LOGGER.warning(
+                            f"Teldrive FloodWait {wait_time}s on {client_name} for {self.current_file_name}"
+                        )
+                        await sleep(wait_time + 2)
+                    elif any(
+                        key in upper_err
+                        for key in (
+                            "CHAT_WRITE_FORBIDDEN",
+                            "PEER_ID_INVALID",
+                            "USER_BANNED",
+                            "CHANNEL_PRIVATE",
+                            "BOT_METHOD_INVALID",
+                        )
+                    ):
+                        LOGGER.warning(
+                            f"Teldrive upload client {client_name} cannot write to storage chat: {err_str}"
+                        )
+                        break
+                    elif attempt < 2:
+                        LOGGER.warning(
+                            f"Teldrive send_document retry {attempt + 1}/3 via {client_name}: {err_str}"
+                        )
+                        await sleep(3)
+                    else:
+                        LOGGER.warning(
+                            f"Teldrive upload failed via {client_name}, trying next client: {err_str}"
+                        )
                     self.last_uploaded = 0
-                    continue
-                if attempt < 2:
-                    LOGGER.warning(f"Teldrive send_document retry {attempt+1}/3: {err_str}")
-                    await sleep(3)
-                    self.last_uploaded = 0
-                    continue
-                raise Exception(self._human_error(f"Teldrive Telegram upload failed for {self.current_file_name}: {err_str}"))
+                finally:
+                    TELDRIVE_UPLOAD_LOADS[client_no] = max(
+                        0, TELDRIVE_UPLOAD_LOADS.get(client_no, 1) - 1
+                    )
+        raise Exception(
+            self._human_error(
+                f"Teldrive Telegram upload failed for {self.current_file_name}: {last_error or 'No upload client succeeded'}"
+            )
+        )
 
     def _split_file_sync(self, file_path, split_dir):
         makedirs(split_dir, exist_ok=True)
@@ -482,29 +638,38 @@ class TeldriveUpload:
         data = await self._share_file_data(file_id)
         return self._share_link(data.get("id"))
 
-    async def upload_file(self, file_path, cloud_path, create_share=True):
+    async def upload_file(self, file_path, cloud_path, create_share=True, ensure_path=True, parent_id=None):
         file_name = ospath.basename(file_path)
-        if not self.overwrite:
-            existing = await self._find_file(file_name, "file", cloud_path)
-            if existing:
-                LOGGER.info(f"Teldrive file exists, skipping upload: {cloud_path}/{file_name}")
-                share_data = await self._share_file_data(existing.get("id"))
-                share_id = share_data.get("id", "")
-                return {
-                    "file": existing,
-                    "share_link": self._share_link(share_id),
-                    "direct_link": self._direct_link(existing, share_id),
-                    "skipped": True,
-                }
-
         target_path = self._join_cloud_path(cloud_path)
-        if target_path != "/":
-            await self._ensure_folder_path(target_path)
+        existing = None
+        if parent_id:
+            existing = await self._get_existing_file_from_parent_cache(file_path, parent_id)
+        else:
+            existing = await self._find_file(
+                file_name,
+                "file",
+                cloud_path=target_path,
+            )
+        if existing:
+            LOGGER.info(f"Teldrive file exists, skipping Telegram upload: {target_path}/{file_name}")
+            share_data = await self._share_file_data(existing.get("id"))
+            share_id = share_data.get("id", "")
+            return {
+                "file": existing,
+                "share_link": self._share_link(share_id),
+                "direct_link": self._direct_link(existing, share_id),
+                "skipped": True,
+            }
+
+        if ensure_path and target_path != "/" and not parent_id:
+            folder = await self._ensure_folder_path(target_path)
+            parent_id = folder.get("id") if folder else None
 
         message_ids = await self._telegram_upload_parts(file_path)
         if not message_ids:
             return None
-        created = await self._create_file_from_messages(file_path, target_path, message_ids)
+        created = await self._create_file_from_messages(file_path, target_path, message_ids, parent_id)
+        self._remember_existing_file(created, parent_id)
         self.is_server_processing = False
         share_data = await self._share_file_data(created.get("id")) if create_share else {}
         share_id = share_data.get("id", "")
@@ -519,7 +684,9 @@ class TeldriveUpload:
             if self.listener.is_cancelled:
                 return None
             LOGGER.info(f"Teldrive folder file: {file_path} -> {cloud_path}")
-            return await self.upload_file(file_path, cloud_path, create_share=False)
+            return await self.upload_file(
+                file_path, cloud_path, create_share=False, ensure_path=False
+            )
 
     async def _upload_dir(self, input_directory):
         root_name = ospath.basename(input_directory.rstrip(ospath.sep))
@@ -529,34 +696,50 @@ class TeldriveUpload:
         root_cloud_path = self._join_cloud_path(base_cloud_path, root_name)
         root_folder = await self._create_or_get_folder(root_cloud_path)
 
-        upload_jobs = []
-        semaphore = Semaphore(2)
+        folder_ids = {root_cloud_path: root_folder.get("id")}
+
         for root, dirs, files in await sync_to_async(lambda: list(oswalk(input_directory))):
             if self.listener.is_cancelled:
                 break
             rel_path = ospath.relpath(root, input_directory)
             rel_cloud = "" if rel_path == "." else rel_path.replace("\\", "/")
             cloud_path = self._join_cloud_path(root_cloud_path, rel_cloud)
-            if rel_path != ".":
-                LOGGER.info(f"Teldrive mkdir: {cloud_path}")
-                await self._mkdir(cloud_path)
+            parent_id = folder_ids.get(cloud_path)
+            if rel_path != "." and not parent_id:
+                parent_path = self._join_cloud_path(*cloud_path.strip("/").split("/")[:-1])
+                parent_id = folder_ids.get(parent_path)
+                LOGGER.info(f"Teldrive create folder by parentId: {cloud_path}")
+                folder = await self._create_folder(
+                    cloud_path.rstrip("/").split("/")[-1],
+                    parent_id=parent_id,
+                    parent_path=parent_path,
+                )
+                parent_id = folder.get("id")
+                folder_ids[cloud_path] = parent_id
                 self.total_folders += 1
             self.total_folders += len(dirs) if rel_path == "." else 0
-            for folder in dirs:
-                folder_path = self._join_cloud_path(cloud_path, folder)
-                LOGGER.info(f"Teldrive mkdir: {folder_path}")
-                await self._mkdir(folder_path)
+            for folder_name in dirs:
+                folder_path = self._join_cloud_path(cloud_path, folder_name)
+                LOGGER.info(f"Teldrive create folder by parentId: {folder_path}")
+                folder = await self._create_folder(
+                    folder_name,
+                    parent_id=parent_id,
+                    parent_path=cloud_path,
+                )
+                folder_ids[folder_path] = folder.get("id")
             for filename in files:
                 if self.listener.is_cancelled:
                     break
-                upload_jobs.append(
-                    self._upload_folder_file(ospath.join(root, filename), cloud_path, semaphore)
+                result = await self.upload_file(
+                    ospath.join(root, filename),
+                    cloud_path,
+                    create_share=False,
+                    ensure_path=False,
+                    parent_id=parent_id,
                 )
-
-        for result in await gather(*upload_jobs):
-            if result:
-                self.results.append(result)
-                self.total_files += 1
+                if result:
+                    self.results.append(result)
+                    self.total_files += 1
 
         root_share = await self._share_file(root_folder.get("id"))
         return root_folder, root_share

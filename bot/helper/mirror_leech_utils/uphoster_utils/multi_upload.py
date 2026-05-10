@@ -105,9 +105,20 @@ class MultiUphosterUpload:
                 ]
                 await self.listener.on_upload_error("All uploads failed:\n" + "\n".join(errors))
             else:
-                successful_result = next(
-                    v for k, v in self.results.items() if "error" not in v
-                )
+                successful_result = None
+                for result in self.results.values():
+                    if "error" not in result:
+                        successful_result = result
+                        break
+                if successful_result is None:
+                    errors = [
+                        f"{service}: {result.get('error', 'Unknown error')}"
+                        for service, result in self.results.items()
+                    ]
+                    await self.listener.on_upload_error(
+                        "All uploads failed:\n" + "\n".join(errors)
+                    )
+                    return
                 await self.listener.on_upload_complete(
                     self.results,
                     successful_result["files"],

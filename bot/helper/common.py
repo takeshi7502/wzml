@@ -329,11 +329,9 @@ class TaskConfig:
                         ):
                             raise ValueError("No PixelDrain Key Found!")
                     elif service == "telecloud":
-                        if not (
-                            self.user_dict.get("TELECLOUD_API_KEY")
-                            or Config.TELECLOUD_API_KEY
-                        ):
-                            raise ValueError("No TeleCloud API Key Found!")
+                        raise ValueError(
+                            "TeleCloud upload is currently disabled/sealed. Please choose another Uphoster destination."
+                        )
                     elif service == "teldrive":
                         if not (
                             self.user_dict.get("TELDRIVE_API_KEY")

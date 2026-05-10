@@ -584,7 +584,7 @@ async def get_user_settings(from_user, stype="main"):
         buttons.data_button("Gofile Tools", f"userset {user_id} gofile")
         buttons.data_button("BuzzHeavier Tools", f"userset {user_id} buzzheavier")
         buttons.data_button("PixelDrain Tools", f"userset {user_id} pixeldrain")
-        buttons.data_button("TeleCloud Tools", f"userset {user_id} telecloud")
+        # TeleCloud is sealed/disabled for now. Keep its settings code below for future re-enable.
         buttons.data_button("Teldrive Tools", f"userset {user_id} teldrive")
         buttons.data_button("Back", f"userset {user_id} back", "footer")
         buttons.data_button("Close", f"userset {user_id} close", "footer")
@@ -691,11 +691,6 @@ async def get_user_settings(from_user, stype="main"):
             f"{'Disable' if share else 'Enable'} Public Share",
             f"userset {user_id} tog TELDRIVE_SHARE {'f' if share else 't'}",
         )
-        overwrite = user_dict.get("TELDRIVE_OVERWRITE", Config.TELDRIVE_OVERWRITE)
-        buttons.data_button(
-            f"{'Disable' if overwrite else 'Enable'} Overwrite",
-            f"userset {user_id} tog TELDRIVE_OVERWRITE {'f' if overwrite else 't'}",
-        )
         split_size = user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
         buttons.data_button(
             f"Split Size ⇋ {split_size.upper()}",
@@ -718,8 +713,7 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Path</b> → <code>{td_path}</code>
 ┠ <b>Channel ID</b> → <code>{td_channel}</code>
 ┠ <b>Split Size</b> → <b>{td_split.upper()}</b>
-┠ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>
-┖ <b>Overwrite</b> → <b>{'Enabled' if overwrite else 'Disabled'}</b>"""
+┖ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>"""
 
     elif stype == "gofile":
         buttons.data_button("Gofile Token", f"userset {user_id} menu GOFILE_TOKEN")
@@ -1415,7 +1409,11 @@ async def edit_user_settings(client, query):
 
         if len(data) > 3:
             service = data[3]
-            if service in selected_services:
+            if service == "telecloud":
+                await query.answer(
+                    "TeleCloud is currently disabled/sealed.", show_alert=True
+                )
+            elif service in selected_services:
                 if len(selected_services) > 1:
                     selected_services.remove(service)
                 else:
@@ -1433,8 +1431,11 @@ async def edit_user_settings(client, query):
                 uphoster_service.split(",") if uphoster_service else ["gofile"]
             )
 
+        selected_services = [service for service in selected_services if service != "telecloud"]
+        if not selected_services:
+            selected_services = ["gofile"]
         buttons = ButtonMaker()
-        for service in ["gofile", "buzzheavier", "pixeldrain", "telecloud", "teldrive"]:
+        for service in ["gofile", "buzzheavier", "pixeldrain", "teldrive"]:
             state = "✓" if service in selected_services else ""
             buttons.data_button(
                 f"{service.capitalize()} {state}",

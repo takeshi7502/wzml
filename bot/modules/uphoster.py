@@ -1,5 +1,6 @@
 from base64 import b64encode
 from re import match as re_match
+from urllib.parse import parse_qs, urlparse
 
 from aiofiles.os import path as aiopath
 from bot.core.config_manager import Config
@@ -438,18 +439,40 @@ class Uphoster(TaskListener):
             await add_mega_download(self, f"{path}/")
         elif self.is_ytdlp:
             opt = yt_opt or self.user_dict.get("YT_DLP_OPTIONS") or Config.YT_DLP_OPTIONS or {}
-            options = {"usenetrc": True}
+            options = {
+                "usenetrc": True,
+                "noplaylist": True,
+                "socket_timeout": 30,
+                "retries": 5,
+                "fragment_retries": 5,
+                "retry_sleep_functions": {
+                    "http": lambda n: 3,
+                    "fragment": lambda n: 3,
+                    "file_access": lambda n: 3,
+                    "extractor": lambda n: 3,
+                },
+            }
             if opt:
                 for key, value in opt.items():
                     if key in ["postprocessors", "download_ranges"]:
                         continue
                     options[key] = value
-            options["playlist_items"] = "0"
+            if parse_qs(urlparse(self.link).query).get("list"):
+                await send_message(
+                    self.message,
+                    f"{self.tag} Link playlist YouTube chưa được hỗ trợ trong /uphoster -ydl. Hãy gửi link video lẻ, không kèm tham số list=.",
+                )
+                await self.remove_from_same_dir()
+                return
             try:
                 result = await sync_to_async(extract_info, self.link, options)
             except Exception as e:
                 msg = str(e).replace("<", " ").replace(">", " ")
                 await send_message(self.message, f"{self.tag} {msg}")
+                await self.remove_from_same_dir()
+                return
+            if result is None:
+                await send_message(self.message, f"{self.tag} yt-dlp could not extract this link.")
                 await self.remove_from_same_dir()
                 return
             qual = await YtSelection(self).get_quality(result)
@@ -458,7 +481,7 @@ class Uphoster(TaskListener):
                 return
             LOGGER.info(f"Downloading with YT-DLP for uphoster: {self.link}")
             ydl = YoutubeDLHelper(self)
-            await ydl.add_download(path, qual, "entries" in result, opt)
+            await ydl.add_download(path, qual, False, options)
         else:
             ussr = args["-au"]
             pssw = args["-ap"]

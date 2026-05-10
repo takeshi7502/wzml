@@ -1,7 +1,6 @@
 from logging import getLogger
 from os import path as ospath, listdir
 from re import search as re_search
-from contextlib import suppress
 from secrets import token_hex
 from yt_dlp import YoutubeDL, DownloadError
 
@@ -187,14 +186,9 @@ class YoutubeDLHelper:
                     self._ext = ext
 
     def _download(self, path):
-        with suppress(Exception):
+        try:
             with YoutubeDL(self.opts) as ydl:
-                try:
-                    ydl.download([self._listener.link])
-                except DownloadError as e:
-                    if not self._listener.is_cancelled:
-                        self._on_download_error(str(e))
-                    return
+                ydl.download([self._listener.link])
             if self.is_playlist and (
                 not ospath.exists(path) or len(listdir(path)) == 0
             ):
@@ -205,6 +199,13 @@ class YoutubeDLHelper:
             if self._listener.is_cancelled:
                 return
             async_to_sync(self._listener.on_download_complete)
+        except DownloadError as e:
+            if not self._listener.is_cancelled:
+                self._on_download_error(str(e))
+        except Exception as e:
+            if not self._listener.is_cancelled:
+                LOGGER.error(f"YT-DLP download failed: {e}", exc_info=True)
+                self._on_download_error(str(e))
         return
 
     async def add_download(self, path, qual, playlist, options):

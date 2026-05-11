@@ -439,8 +439,19 @@ class Uphoster(TaskListener):
             await add_mega_download(self, f"{path}/")
         elif self.is_ytdlp:
             opt = yt_opt or self.user_dict.get("YT_DLP_OPTIONS") or Config.YT_DLP_OPTIONS or {}
+            cookie_to_use = (
+                usr_cookie
+                if not self.user_dict.get("USE_DEFAULT_COOKIE", False)
+                and (usr_cookie := self.user_dict.get("USER_COOKIE_FILE", ""))
+                and await aiopath.exists(usr_cookie)
+                else "cookies.txt"
+            )
+            LOGGER.info(
+                f"Using cookies.txt file for uphoster ytdlp: {cookie_to_use} | User ID : {self.user_id}"
+            )
             options = {
                 "usenetrc": True,
+                "cookiefile": cookie_to_use,
                 "noplaylist": True,
                 "socket_timeout": 30,
                 "retries": 5,

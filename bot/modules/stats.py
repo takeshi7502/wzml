@@ -136,6 +136,10 @@ async def get_stats(event, key="home"):
                 True,
             )
         )[0]
+        try:
+            remarks = compare_versions(get_version(), official_v)
+        except Exception:
+            remarks = "N/A (Upstream repo not set)"
         msg = f"""⌬ <b><i>Repo Statistics :</i></b>
 │
 ┟ <b>Bot Updated :</b> {last_commit}
@@ -143,7 +147,7 @@ async def get_stats(event, key="home"):
 ┠ <b>Latest Version :</b> {official_v}
 ┖ <b>Last ChangeLog :</b> {changelog}
 
-⌬ <b>REMARKS :</b> <code>{compare_versions(get_version(), official_v)}</code>
+⌬ <b>REMARKS :</b> <code>{remarks}</code>
     """
     elif key == "stpkgs":
         ver = bot_cache.get("eng_versions", {})

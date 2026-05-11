@@ -84,9 +84,11 @@ class TeldriveUpload:
         self.split_size = self._parse_split_size(
             user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
         )
-        self.api_timeout = ClientTimeout(total=60, connect=15, sock_connect=15, sock_read=45)
+        self.api_timeout = ClientTimeout(total=120, connect=30, sock_connect=30, sock_read=90)
         self.upload_timeout = ClientTimeout(total=None, connect=30, sock_connect=30, sock_read=300)
         self._existing_files_cache = {}
+        self._api_session = None
+        self._metadata_posts = 0
 
     @property
     def speed(self):
@@ -121,6 +123,18 @@ class TeldriveUpload:
         if token.startswith("access_token="):
             return {"Cookie": token}
         return {"Cookie": f"access_token={token}"}
+
+    async def _get_session(self):
+        if self._api_session is None or self._api_session.closed:
+            self._api_session = ClientSession(
+                headers=self._headers(), timeout=self.api_timeout
+            )
+        return self._api_session
+
+    async def _close_session(self):
+        if self._api_session and not self._api_session.closed:
+            await self._api_session.close()
+            self._api_session = None
 
     def _join_cloud_path(self, *parts):
         clean_parts = [str(part).strip("/") for part in parts if str(part).strip("/")]
@@ -216,19 +230,19 @@ class TeldriveUpload:
         return data
 
     async def _mkdir(self, cloud_path):
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            try:
-                async with session.post(
-                    self._api("files/mkdir"),
-                    json={"path": cloud_path},
-                ) as resp:
-                    return await self._parse_response(resp, allow_empty=True)
-            except Exception as err:
-                if "exist" not in str(err).lower() and "duplicate" not in str(err).lower():
-                    raise
-                parent = self._join_cloud_path(*cloud_path.strip("/").split("/")[:-1])
-                name = cloud_path.rstrip("/").split("/")[-1]
-                return await self._find_file(name, "folder", cloud_path=parent)
+        session = await self._get_session()
+        try:
+            async with session.post(
+                self._api("files/mkdir"),
+                json={"path": cloud_path},
+            ) as resp:
+                return await self._parse_response(resp, allow_empty=True)
+        except Exception as err:
+            if "exist" not in str(err).lower() and "duplicate" not in str(err).lower():
+                raise
+            parent = self._join_cloud_path(*cloud_path.strip("/").split("/")[:-1])
+            name = cloud_path.rstrip("/").split("/")[-1]
+            return await self._find_file(name, "folder", cloud_path=parent)
 
     async def _find_file(self, name, file_type, cloud_path=None, parent_id=None):
         params = {
@@ -241,9 +255,9 @@ class TeldriveUpload:
             params["parentId"] = parent_id
         else:
             params["path"] = cloud_path or "/"
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.get(self._api("files"), params=params) as resp:
-                data = await self._parse_response(resp)
+        session = await self._get_session()
+        async with session.get(self._api("files"), params=params) as resp:
+            data = await self._parse_response(resp)
         items = data.get("items") or []
         for item in items:
             if item.get("name") == name and item.get("type") == file_type:
@@ -269,9 +283,9 @@ class TeldriveUpload:
             }
             if cursor:
                 params["cursor"] = cursor
-            async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-                async with session.get(self._api("files"), params=params) as resp:
-                    data = await self._parse_response(resp)
+            session = await self._get_session()
+            async with session.get(self._api("files"), params=params) as resp:
+                data = await self._parse_response(resp)
             for item in data.get("items") or []:
                 if item.get("type") == "file" and item.get("name"):
                     existing[item["name"]] = item
@@ -295,11 +309,87 @@ class TeldriveUpload:
         local_size = Path(file_path).stat().st_size
         remote_size = remote.get("size")
         if remote_size is not None and int(remote_size) != local_size:
-            LOGGER.info(
-                f"Teldrive existing name has different size, re-uploading: {remote.get('name')} ({remote_size} != {local_size})"
-            )
             return None
         return remote
+
+    async def _metadata_pause(self):
+        self._metadata_posts += 1
+        if self._metadata_posts % 15 == 0:
+            await sleep(2.0)
+        elif self._metadata_posts > 3:
+            await sleep(0.5)
+
+    async def _post_file_metadata(self, payload, file_path, cloud_path, parent_id=None):
+        last_error = None
+        for attempt in range(1, 5):
+            try:
+                await self._metadata_pause()
+                session = await self._get_session()
+                async with session.post(self._api("files"), json=payload) as resp:
+                    return await self._parse_response(resp)
+            except Exception as err:
+                last_error = err
+                if self.listener.is_cancelled:
+                    raise
+                LOGGER.warning(
+                    f"Teldrive metadata POST retry {attempt}/4 for {payload.get('name')}: {err}"
+                )
+                # After timeout, check if backend already created the record
+                existing = None
+                try:
+                    if parent_id:
+                        self._existing_files_cache.pop(parent_id, None)
+                        existing = await self._get_existing_file_from_parent_cache(file_path, parent_id)
+                    else:
+                        existing = await self._find_file(
+                            payload.get("name"),
+                            "file",
+                            cloud_path=cloud_path,
+                        )
+                except Exception:
+                    pass
+                if existing:
+                    LOGGER.info(f"Teldrive metadata already created after timeout: {payload.get('name')}")
+                    return existing
+                if attempt < 4:
+                    wait_secs = min(30, 5 * attempt)
+                    LOGGER.info(f"Teldrive waiting {wait_secs}s before metadata retry...")
+                    await sleep(wait_secs)
+        raise last_error
+
+    async def _post_folder_metadata(self, payload, folder_name, parent_id=None, parent_path="/"):
+        last_error = None
+        for attempt in range(1, 5):
+            try:
+                if self._metadata_posts > 3:
+                    await sleep(0.5)
+                self._metadata_posts += 1
+                session = await self._get_session()
+                async with session.post(self._api("files"), json=payload) as resp:
+                    return await self._parse_response(resp)
+            except Exception as err:
+                last_error = err
+                if self.listener.is_cancelled:
+                    raise
+                LOGGER.warning(
+                    f"Teldrive folder POST retry {attempt}/4 for {folder_name}: {err}"
+                )
+                # Check if folder was already created
+                try:
+                    existing = await self._find_file(
+                        folder_name, "folder",
+                        parent_id=parent_id, cloud_path=parent_path
+                    )
+                    if existing:
+                        LOGGER.info(f"Teldrive folder already created after timeout: {folder_name}")
+                        return existing
+                except Exception:
+                    pass
+                if attempt < 4:
+                    wait_secs = min(30, 5 * attempt)
+                    LOGGER.info(f"Teldrive waiting {wait_secs}s before folder retry...")
+                    await sleep(wait_secs)
+        raise last_error
 
     def _remember_existing_file(self, file_data, parent_id):
         if not parent_id or not file_data or not file_data.get("name"):
@@ -310,12 +400,12 @@ class TeldriveUpload:
     async def _delete_file(self, file_id):
         if not file_id:
             return
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.post(
-                self._api("files/delete"),
-                json={"ids": [file_id]},
-            ) as resp:
-                await self._parse_response(resp, allow_empty=True)
+        session = await self._get_session()
+        async with session.post(
+            self._api("files/delete"),
+            json={"ids": [file_id]},
+        ) as resp:
+            await self._parse_response(resp, allow_empty=True)
 
     async def _create_folder(self, folder_name, parent_id=None, parent_path="/"):
         payload = {
@@ -326,9 +416,9 @@ class TeldriveUpload:
             payload["parentId"] = parent_id
         else:
             payload["path"] = parent_path or "/"
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.post(self._api("files"), json=payload) as resp:
-                return await self._parse_response(resp)
+        return await self._post_folder_metadata(
+            payload, folder_name, parent_id=parent_id, parent_path=parent_path
+        )
 
     async def _create_or_get_folder(self, folder_path):
         parent_path = self._join_cloud_path(*folder_path.strip("/").split("/")[:-1])
@@ -370,9 +460,9 @@ class TeldriveUpload:
         file_name = ospath.basename(file_path)
         part_name = file_name
 
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.get(self._api("uploads/fileId")) as resp:
-                await self._parse_response(resp, allow_empty=True)
+        session = await self._get_session()
+        async with session.get(self._api("uploads/fileId")) as resp:
+            await self._parse_response(resp, allow_empty=True)
 
         params = {
             "partName": part_name,
@@ -408,9 +498,9 @@ class TeldriveUpload:
                     return data
 
     async def _get_upload_parts(self, upload_id):
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.get(self._api(f"uploads/{upload_id}")) as resp:
-                return await self._parse_response(resp)
+        session = await self._get_session()
+        async with session.get(self._api(f"uploads/{upload_id}")) as resp:
+            return await self._parse_response(resp)
 
     async def _create_file(self, upload_id, file_path, cloud_path, upload_part):
         remote_parts = await self._get_upload_parts(upload_id)
@@ -440,9 +530,7 @@ class TeldriveUpload:
         if upload_part.get("hash"):
             payload["hash"] = upload_part["hash"]
 
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.post(self._api("files"), json=payload) as resp:
-                return await self._parse_response(resp)
+        return await self._post_file_metadata(payload, file_path, cloud_path)
 
     async def _create_file_from_messages(self, file_path, cloud_path, message_ids, parent_id=None):
         payload = {
@@ -456,17 +544,9 @@ class TeldriveUpload:
         }
         if parent_id:
             payload["parentId"] = parent_id
-            LOGGER.info(
-                f"Teldrive create file metadata by parentId: {payload['name']} -> {parent_id}"
-            )
         else:
             payload["path"] = cloud_path
-            LOGGER.info(
-                f"Teldrive create file metadata by path: {payload['name']} -> {cloud_path}"
-            )
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.post(self._api("files"), json=payload) as resp:
-                return await self._parse_response(resp)
+        return await self._post_file_metadata(payload, file_path, cloud_path, parent_id)
 
     @staticmethod
     async def _pick_upload_clients():
@@ -508,7 +588,7 @@ class TeldriveUpload:
         self.current_file_name = display_name or ospath.basename(file_path)
         self.is_server_processing = False
         chat_id = self._storage_chat_id()
-        LOGGER.info(f"Teldrive fast upload to Telegram storage: {file_path} -> {chat_id}")
+        # Keep routine per-file upload logs quiet; warnings/errors still log below.
         clients = await self._pick_upload_clients()
         last_error = None
         for client_no, client in clients:
@@ -516,9 +596,7 @@ class TeldriveUpload:
             for attempt in range(3):
                 try:
                     TELDRIVE_UPLOAD_LOADS[client_no] = TELDRIVE_UPLOAD_LOADS.get(client_no, 0) + 1
-                    LOGGER.info(
-                        f"Teldrive upload via {client_name} attempt {attempt + 1}/3: {self.current_file_name}"
-                    )
+                    # Per-file attempt logging is intentionally suppressed to keep folder logs readable.
                     msg = await client.send_document(
                         chat_id=chat_id,
                         document=file_path,
@@ -527,7 +605,7 @@ class TeldriveUpload:
                         progress=lambda current, total: self.__progress_callback(current),
                     )
                     self.is_server_processing = True
-                    LOGGER.info(f"Teldrive uploaded via {client_name}: message {msg.id}")
+                    # Per-file success logging is intentionally suppressed to keep folder logs readable.
                     return msg
                 except Exception as e:
                     err_str = str(e)
@@ -602,7 +680,7 @@ class TeldriveUpload:
 
         split_dir = ospath.join(ospath.dirname(file_path), f".teldrive_parts_{uuid4().hex}")
         LOGGER.info(
-            f"Teldrive splitting {file_path} into {self.split_size} byte parts for Telegram storage"
+            f"Teldrive splitting large file into {self.split_size} byte parts for Telegram storage"
         )
         try:
             part_paths = await sync_to_async(self._split_file_sync, file_path, split_dir)
@@ -612,7 +690,7 @@ class TeldriveUpload:
                 if self.listener.is_cancelled:
                     return []
                 display_name = f"{ospath.basename(file_path)}.part{index:03d}"
-                LOGGER.info(f"Teldrive uploading part {index}/{total_parts}: {display_name}")
+                # Per-part logging is intentionally suppressed to keep folder logs readable.
                 msg = await self._telegram_upload_file(part_path, display_name)
                 if not msg:
                     return []
@@ -624,15 +702,29 @@ class TeldriveUpload:
     async def _share_file_data(self, file_id):
         if not self.share or not file_id:
             return {}
-        async with ClientSession(headers=self._headers(), timeout=self.api_timeout) as session:
-            async with session.post(
-                self._api(f"files/{file_id}/share"),
-                json={"expiresAt": "2099-12-31T23:59:59.000Z"},
-            ) as resp:
-                await self._parse_response(resp, allow_empty=True)
-            async with session.get(self._api(f"files/{file_id}/share")) as resp:
-                data = await self._parse_response(resp)
-        return data or {}
+        last_error = None
+        for attempt in range(1, 4):
+            try:
+                session = await self._get_session()
+                async with session.post(
+                    self._api(f"files/{file_id}/share"),
+                    json={"expiresAt": "2099-12-31T23:59:59.000Z"},
+                ) as resp:
+                    await self._parse_response(resp, allow_empty=True)
+                async with session.get(self._api(f"files/{file_id}/share")) as resp:
+                    data = await self._parse_response(resp)
+                return data or {}
+            except Exception as err:
+                last_error = err
+                if self.listener.is_cancelled:
+                    return {}
+                LOGGER.warning(
+                    f"Teldrive share retry {attempt}/3 for file {file_id}: {err}"
+                )
+                if attempt < 3:
+                    await sleep(min(15, 5 * attempt))
+        LOGGER.warning(f"Teldrive share failed after retries for {file_id}, skipping share")
+        return {}
 
     async def _share_file(self, file_id):
         data = await self._share_file_data(file_id)
@@ -651,7 +743,14 @@ class TeldriveUpload:
                 cloud_path=target_path,
             )
         if existing:
-            LOGGER.info(f"Teldrive file exists, skipping Telegram upload: {target_path}/{file_name}")
+            # Size mismatch check for files found via _find_file
+            local_size = Path(file_path).stat().st_size
+            remote_size = existing.get("size")
+            if remote_size is not None and int(remote_size) != local_size:
+                existing = None
+
+        if existing:
+            # Per-file skip logging is intentionally suppressed to keep folder logs readable.
             share_data = await self._share_file_data(existing.get("id"))
             share_id = share_data.get("id", "")
             return {
@@ -683,7 +782,7 @@ class TeldriveUpload:
         async with semaphore:
             if self.listener.is_cancelled:
                 return None
-            LOGGER.info(f"Teldrive folder file: {file_path} -> {cloud_path}")
+            # Per-file folder logging is intentionally suppressed to keep folder logs readable.
             return await self.upload_file(
                 file_path, cloud_path, create_share=False, ensure_path=False
             )
@@ -697,6 +796,7 @@ class TeldriveUpload:
         root_folder = await self._create_or_get_folder(root_cloud_path)
 
         folder_ids = {root_cloud_path: root_folder.get("id")}
+        LOGGER.info(f"Teldrive folder upload started: {root_cloud_path}")
 
         for root, dirs, files in await sync_to_async(lambda: list(oswalk(input_directory))):
             if self.listener.is_cancelled:
@@ -740,6 +840,10 @@ class TeldriveUpload:
                 if result:
                     self.results.append(result)
                     self.total_files += 1
+
+        LOGGER.info(
+            f"Teldrive folder upload finished: files={self.total_files}, folders={self.total_folders}"
+        )
 
         root_share = await self._share_file(root_folder.get("id"))
         return root_folder, root_share
@@ -797,6 +901,7 @@ class TeldriveUpload:
             self.is_uploading = False
             if self._updater:
                 self._updater.cancel()
+            await self._close_session()
 
     async def cancel_task(self):
         self.listener.is_cancelled = True

@@ -34,6 +34,7 @@ class BotCommands:
         "RestartSessions": ["restartses", "rses"],
         "Broadcast": ["broadcast", "bc"],
         "Stats": ["stats", "st"],
+        "SpeedTestModule": "sp",
         "Help": ["help", "h"],
         "Log": "log",
         "Shell": "shell",

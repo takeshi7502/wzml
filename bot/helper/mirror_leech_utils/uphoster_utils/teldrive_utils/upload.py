@@ -255,14 +255,28 @@ class TeldriveUpload:
             params["parentId"] = parent_id
         else:
             params["path"] = cloud_path or "/"
-        session = await self._get_session()
-        async with session.get(self._api("files"), params=params) as resp:
-            data = await self._parse_response(resp)
-        items = data.get("items") or []
-        for item in items:
-            if item.get("name") == name and item.get("type") == file_type:
-                return item
-        return items[0] if items else None
+        last_error = None
+        max_attempts = 6
+        for attempt in range(1, max_attempts + 1):
+            try:
+                session = await self._get_session()
+                async with session.get(self._api("files"), params=params) as resp:
+                    data = await self._parse_response(resp)
+                items = data.get("items") or []
+                for item in items:
+                    if item.get("name") == name and item.get("type") == file_type:
+                        return item
+                return items[0] if items else None
+            except Exception as err:
+                last_error = err
+                if self.listener.is_cancelled:
+                    raise
+                LOGGER.warning(
+                    f"Teldrive find retry {attempt}/{max_attempts} for {name}: {err}"
+                )
+                if attempt < max_attempts:
+                    await sleep(min(45, 5 * attempt))
+        raise last_error
 
     async def _list_existing_files_by_parent(self, parent_id):
         if not parent_id:
@@ -283,9 +297,25 @@ class TeldriveUpload:
             }
             if cursor:
                 params["cursor"] = cursor
-            session = await self._get_session()
-            async with session.get(self._api("files"), params=params) as resp:
-                data = await self._parse_response(resp)
+            last_error = None
+            max_attempts = 6
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    session = await self._get_session()
+                    async with session.get(self._api("files"), params=params) as resp:
+                        data = await self._parse_response(resp)
+                    break
+                except Exception as err:
+                    last_error = err
+                    if self.listener.is_cancelled:
+                        raise
+                    LOGGER.warning(
+                        f"Teldrive list retry {attempt}/{max_attempts} for parentId {parent_id}: {err}"
+                    )
+                    if attempt < max_attempts:
+                        await sleep(min(45, 5 * attempt))
+            else:
+                raise last_error
             for item in data.get("items") or []:
                 if item.get("type") == "file" and item.get("name"):
                     existing[item["name"]] = item
@@ -321,7 +351,8 @@ class TeldriveUpload:
 
     async def _post_file_metadata(self, payload, file_path, cloud_path, parent_id=None):
         last_error = None
-        for attempt in range(1, 5):
+        max_attempts = 8
+        for attempt in range(1, max_attempts + 1):
             try:
                 await self._metadata_pause()
                 session = await self._get_session()
@@ -332,9 +363,9 @@ class TeldriveUpload:
                 if self.listener.is_cancelled:
                     raise
                 LOGGER.warning(
-                    f"Teldrive metadata POST retry {attempt}/4 for {payload.get('name')}: {err}"
+                    f"Teldrive metadata POST retry {attempt}/{max_attempts} for {payload.get('name')}: {err}"
                 )
-                # After timeout, check if backend already created the record
+                # After timeout/error, check if backend already created the record.
                 existing = None
                 try:
                     if parent_id:
@@ -346,13 +377,15 @@ class TeldriveUpload:
                             "file",
                             cloud_path=cloud_path,
                         )
-                except Exception:
-                    pass
+                except Exception as check_err:
+                    LOGGER.warning(
+                        f"Teldrive metadata existing-check failed for {payload.get('name')}: {check_err}"
+                    )
                 if existing:
                     LOGGER.info(f"Teldrive metadata already created after timeout: {payload.get('name')}")
                     return existing
-                if attempt < 4:
-                    wait_secs = min(30, 5 * attempt)
+                if attempt < max_attempts:
+                    wait_secs = min(60, 5 * attempt)
                     LOGGER.info(f"Teldrive waiting {wait_secs}s before metadata retry...")
                     await sleep(wait_secs)
         raise last_error
@@ -580,6 +613,23 @@ class TeldriveUpload:
             return f"main @{getattr(client.me, 'username', 'bot')}"
         return f"helper-{client_no} @{getattr(client.me, 'username', 'bot')}"
 
+    async def _recover_uploaded_message(self, client, chat_id, file_path, display_name):
+        file_size = Path(file_path).stat().st_size
+        try:
+            async for message in client.get_chat_history(chat_id, limit=30):
+                document = getattr(message, "document", None)
+                if not document:
+                    continue
+                doc_name = getattr(document, "file_name", "") or ""
+                doc_size = getattr(document, "file_size", 0) or 0
+                if doc_name == display_name and int(doc_size) == int(file_size):
+                    LOGGER.info(f"Teldrive recovered uploaded Telegram message: {display_name} -> {message.id}")
+                    self.is_server_processing = True
+                    return message
+        except Exception as err:
+            LOGGER.warning(f"Teldrive Telegram upload recovery failed for {display_name}: {err}")
+        return None
+
     async def _telegram_upload_file(self, file_path, display_name=None):
         if self.listener.is_cancelled:
             return None
@@ -635,15 +685,21 @@ class TeldriveUpload:
                             f"Teldrive upload client {client_name} cannot write to storage chat: {err_str}"
                         )
                         break
-                    elif attempt < 2:
-                        LOGGER.warning(
-                            f"Teldrive send_document retry {attempt + 1}/3 via {client_name}: {err_str}"
-                        )
-                        await sleep(3)
                     else:
-                        LOGGER.warning(
-                            f"Teldrive upload failed via {client_name}, trying next client: {err_str}"
+                        recovered = await self._recover_uploaded_message(
+                            client, chat_id, file_path, self.current_file_name
                         )
+                        if recovered:
+                            return recovered
+                        if attempt < 2:
+                            LOGGER.warning(
+                                f"Teldrive send_document retry {attempt + 1}/3 via {client_name}: {err_str}"
+                            )
+                            await sleep(5 * (attempt + 1))
+                        else:
+                            LOGGER.warning(
+                                f"Teldrive upload failed via {client_name}, trying next client: {err_str}"
+                            )
                     self.last_uploaded = 0
                 finally:
                     TELDRIVE_UPLOAD_LOADS[client_no] = max(
@@ -703,7 +759,8 @@ class TeldriveUpload:
         if not self.share or not file_id:
             return {}
         last_error = None
-        for attempt in range(1, 4):
+        max_attempts = 8
+        for attempt in range(1, max_attempts + 1):
             try:
                 session = await self._get_session()
                 async with session.post(
@@ -719,11 +776,13 @@ class TeldriveUpload:
                 if self.listener.is_cancelled:
                     return {}
                 LOGGER.warning(
-                    f"Teldrive share retry {attempt}/3 for file {file_id}: {err}"
+                    f"Teldrive share retry {attempt}/{max_attempts} for file {file_id}: {err}"
                 )
-                if attempt < 3:
-                    await sleep(min(15, 5 * attempt))
-        LOGGER.warning(f"Teldrive share failed after retries for {file_id}, skipping share")
+                if attempt < max_attempts:
+                    await sleep(min(60, 5 * attempt))
+        LOGGER.warning(
+            f"Teldrive share failed after retries for {file_id}, continuing without share link: {last_error}"
+        )
         return {}
 
     async def _share_file(self, file_id):
@@ -734,13 +793,20 @@ class TeldriveUpload:
         file_name = ospath.basename(file_path)
         target_path = self._join_cloud_path(cloud_path)
         existing = None
-        if parent_id:
-            existing = await self._get_existing_file_from_parent_cache(file_path, parent_id)
-        else:
-            existing = await self._find_file(
-                file_name,
-                "file",
-                cloud_path=target_path,
+        try:
+            if parent_id:
+                existing = await self._get_existing_file_from_parent_cache(file_path, parent_id)
+            else:
+                existing = await self._find_file(
+                    file_name,
+                    "file",
+                    cloud_path=target_path,
+                )
+        except Exception as err:
+            if self.listener.is_cancelled:
+                raise
+            LOGGER.warning(
+                f"Teldrive duplicate pre-check failed for {file_name}, continuing upload: {err}"
             )
         if existing:
             # Size mismatch check for files found via _find_file

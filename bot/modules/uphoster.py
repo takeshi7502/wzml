@@ -109,6 +109,7 @@ class Uphoster(TaskListener):
             "-ut": False,
             "-yt": False,
             "-ydl": False,
+            "-tor": False,
             "-i": 0,
             "-sp": 0,
             "link": "",
@@ -130,13 +131,20 @@ class Uphoster(TaskListener):
         }
 
         use_ytdlp = "-ydl" in input_list
+        use_torrent = "-tor" in input_list
+        if use_ytdlp and use_torrent:
+            await send_message(self.message, "Không thể dùng -ydl và -tor cùng lúc.")
+            return
         if use_ytdlp:
             input_list = [part for part in input_list if part != "-ydl"]
+        if use_torrent:
+            input_list = [part for part in input_list if part != "-tor"]
 
         arg_parser(input_list[1:], args)
         args["-ydl"] = use_ytdlp
+        args["-tor"] = use_torrent
         LOGGER.info(
-            f"Uphoster args parsed: ydl={args['-ydl']} link={args['link']} raw={' '.join(input_list[1:])}"
+            f"Uphoster args parsed: ydl={args['-ydl']} tor={args['-tor']} link={args['link']} raw={' '.join(input_list[1:])}"
         )
 
         if Config.DISABLE_BULK and args.get("-b", False):
@@ -189,6 +197,7 @@ class Uphoster(TaskListener):
         self.user_trans = args["-ut"]
         self.is_yt = args["-yt"]
         self.is_ytdlp = args["-ydl"]
+        self.is_qbit = args["-tor"]
         self.metadata_dict = self.default_metadata_dict.copy()
         self.audio_metadata_dict = self.audio_metadata_dict.copy()
         self.video_metadata_dict = self.video_metadata_dict.copy()

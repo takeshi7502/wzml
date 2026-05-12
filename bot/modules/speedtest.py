@@ -39,8 +39,7 @@ async def speedtest(_, message):
 ┖ <b>Latency:</b> <code>{result['server']['latency']}</code>
 """
     try:
-        await send_message(message, string_speed, photo=result["share"])
-        await delete_message(speed)
+        await edit_message(speed, string_speed)
     except Exception as e:
         LOGGER.error(str(e))
-        await edit_message(speed, string_speed)
+        await send_message(message, string_speed)

@@ -1,7 +1,8 @@
 services:
   app:
-    build: .
+    image: ghcr.io/takeshi7502/wzml:latest
     command: bash start.sh
-    restart: on-failure
+    restart: unless-stopped
     ports:
       - "8080:8080"
+

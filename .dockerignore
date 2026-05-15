@@ -1,0 +1,14 @@
+.git
+__pycache__
+*.pyc
+*.log
+
+config.py
+config.env
+token.pickle
+accounts/
+*.session
+*.pickle
+*.json
+
+.venv/

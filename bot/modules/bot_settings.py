@@ -658,6 +658,11 @@ async def generate_user_session(client, query):
             session_result_buttons(),
         )
 
+    status_message = await send_message(
+        query.message,
+        "<b>Generate USER_SESSION_STRING</b>\n\nPreparing session generator...",
+    )
+
     pyro_client = Client(
         name=f"wz_session_{user_id}",
         api_id=Config.TELEGRAM_API,
@@ -671,7 +676,7 @@ async def generate_user_session(client, query):
     try:
         phone_msg = await ask_session_input(
             client,
-            query.message,
+            status_message,
             user_id,
             f"""<b>Generate USER_SESSION_STRING</b>
 
@@ -685,7 +690,7 @@ Timeout: <code>60 sec</code>""",
         )
         if not phone_msg:
             return await edit_message(
-                query.message,
+                status_message,
                 "Session generation timed out while waiting for phone number.",
                 session_result_buttons(),
             )
@@ -693,81 +698,96 @@ Timeout: <code>60 sec</code>""",
         phone_number = phone_msg.text.strip()
         await delete_message(phone_msg)
         await update_session_status(
-            query.message,
+            status_message,
             "<b>Generate USER_SESSION_STRING</b>\n\nSending Telegram login code...",
         )
 
         await pyro_client.connect()
         sent_code = await pyro_client.send_code(phone_number)
-        code_msg = await ask_session_input(
-            client,
-            query.message,
-            user_id,
-            """<b>Generate USER_SESSION_STRING</b>
+        signed_in = False
+        last_code_error = ""
+
+        for attempt in range(2):
+            code_msg = await ask_session_input(
+                client,
+                status_message,
+                user_id,
+                f"""<b>Generate USER_SESSION_STRING</b>
 
 <b>Step 2/3:</b> Telegram sent a login code.
-Send the code here. Spaces are allowed, e.g. <code>1 2 3 4 5</code>.
-
+Send the newest code here. Spaces are allowed, e.g. <code>1 2 3 4 5</code>.
+{last_code_error}
 Timeout: <code>60 sec</code>""",
-        )
-        if not code_msg:
-            return await edit_message(
-                query.message,
-                "Session generation timed out while waiting for login code.",
-                session_result_buttons(),
             )
-        phone_code = code_msg.text.replace(" ", "").strip()
-        await delete_message(code_msg)
+            if not code_msg:
+                return await edit_message(
+                    status_message,
+                    "Session generation timed out while waiting for login code.",
+                    session_result_buttons(),
+                )
+            phone_code = "".join(filter(str.isdigit, code_msg.text))
+            await delete_message(code_msg)
 
-        signed_in = False
-        try:
-            await update_session_status(
-                query.message,
-                "<b>Generate USER_SESSION_STRING</b>\n\nVerifying login code...",
-            )
-            await pyro_client.sign_in(phone_number, sent_code.phone_code_hash, phone_code)
-            signed_in = True
-        except SessionPasswordNeeded:
-            await update_session_status(
-                query.message,
-                "<b>Generate USER_SESSION_STRING</b>\n\n2FA is enabled. Waiting for cloud password...",
-            )
-            pass_msg = await ask_session_input(
-                client,
-                query.message,
-                user_id,
-                """<b>Generate USER_SESSION_STRING</b>
+            if not phone_code:
+                last_code_error = "\n<b>Last error:</b> No digits found in your code. Please send the code again.\n"
+                continue
+
+            try:
+                await update_session_status(
+                    status_message,
+                    "<b>Generate USER_SESSION_STRING</b>\n\nVerifying login code...",
+                )
+                await pyro_client.sign_in(phone_number, sent_code.phone_code_hash, phone_code)
+                signed_in = True
+                break
+            except SessionPasswordNeeded:
+                await update_session_status(
+                    status_message,
+                    "<b>Generate USER_SESSION_STRING</b>\n\n2FA is enabled. Waiting for cloud password...",
+                )
+                pass_msg = await ask_session_input(
+                    client,
+                    status_message,
+                    user_id,
+                    """<b>Generate USER_SESSION_STRING</b>
 
 <b>Step 3/3:</b> 2FA password is enabled.
 Send your Telegram cloud password.
 
 Timeout: <code>60 sec</code>""",
-            )
-            if not pass_msg:
-                return await edit_message(
-                    query.message,
-                    "Session generation timed out while waiting for 2FA password.",
-                    session_result_buttons(),
                 )
-            await update_session_status(
-                query.message,
-                "<b>Generate USER_SESSION_STRING</b>\n\nChecking 2FA password...",
-            )
-            await pyro_client.check_password(pass_msg.text.strip())
-            signed_in = True
-            await delete_message(pass_msg)
-        except (PhoneCodeInvalid, PhoneCodeExpired) as e:
+                if not pass_msg:
+                    return await edit_message(
+                        status_message,
+                        "Session generation timed out while waiting for 2FA password.",
+                        session_result_buttons(),
+                    )
+                await update_session_status(
+                    status_message,
+                    "<b>Generate USER_SESSION_STRING</b>\n\nChecking 2FA password...",
+                )
+                await pyro_client.check_password(pass_msg.text.strip())
+                signed_in = True
+                await delete_message(pass_msg)
+                break
+            except (PhoneCodeInvalid, PhoneCodeExpired) as e:
+                last_code_error = f"\n<b>Last error:</b> <code>{e}</code>\nPlease request/use the newest Telegram code and send it again.\n"
+                if isinstance(e, PhoneCodeExpired):
+                    await update_session_status(
+                        status_message,
+                        "<b>Generate USER_SESSION_STRING</b>\n\nLogin code expired. Requesting a fresh code...",
+                    )
+                    sent_code = await pyro_client.send_code(phone_number)
+
+        if not signed_in:
             return await edit_message(
-                query.message,
-                f"Invalid or expired login code: <code>{e}</code>",
+                status_message,
+                "Could not verify the login code. Please start session generation again and use the newest Telegram code.",
                 session_result_buttons(),
             )
 
-        if not signed_in:
-            raise RuntimeError("Telegram authorization did not complete. Please try again.")
-
         await update_session_status(
-            query.message,
+            status_message,
             "<b>Generate USER_SESSION_STRING</b>\n\nExporting and saving session string...",
         )
         session_string = await pyro_client.export_session_string()
@@ -776,16 +796,16 @@ Timeout: <code>60 sec</code>""",
 
         with BytesIO(str.encode(session_string)) as out_file:
             out_file.name = "USER_SESSION_STRING.txt"
-            await send_file(query.message, out_file)
+            await send_file(status_message, out_file)
         await edit_message(
-            query.message,
+            status_message,
             "USER_SESSION_STRING generated and saved to config database. Restart bot for it to take effect.",
             session_result_buttons(),
         )
     except Exception as e:
         LOGGER.error(f"Failed to generate USER_SESSION_STRING: {e}", exc_info=True)
         await edit_message(
-            query.message,
+            status_message,
             f"Failed to generate session: <code>{e}</code>",
             session_result_buttons(),
         )

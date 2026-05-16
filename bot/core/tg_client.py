@@ -26,7 +26,7 @@ class TgClient:
         kwargs["api_hash"] = Config.TELEGRAM_HASH
         kwargs["proxy"] = Config.TG_PROXY
         kwargs["parse_mode"] = enums.ParseMode.HTML
-        kwargs["in_memory"] = bool(kwargs.get("session_string"))
+        kwargs["in_memory"] = True
         for param, value in {
             "max_concurrent_transmissions": 100,
             "skip_updates": False,

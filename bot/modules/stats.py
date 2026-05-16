@@ -127,12 +127,19 @@ async def get_stats(event, key="home"):
             )[0]
             changelog = (
                 await cmd_exec(
-                    "git log -1 --pretty=format:'<code>%s</code> <b>By</b> %an'", True
+                    "git log -1 --perl-regexp --author='^(?!github-actions\\[bot\\]$)' --invert-grep --grep='\\[skip changelog\\]' --pretty=format:'<code>%s</code> <b>By</b> %an'",
+                    True,
                 )
             )[0]
+        repo_url = Config.UPSTREAM_REPO or "https://github.com/takeshi7502/wzml"
+        raw_url = repo_url.rstrip("/")
+        if raw_url.endswith(".git"):
+            raw_url = raw_url[:-4]
+        if "github.com/" in raw_url:
+            raw_url = raw_url.replace("github.com/", "raw.githubusercontent.com/")
         official_v = (
             await cmd_exec(
-                f"curl -o latestversion.py https://raw.githubusercontent.com/SilentDemonSD/WZML-X/{Config.UPSTREAM_BRANCH}/bot/version.py -s && python3 latestversion.py && rm latestversion.py",
+                f"curl -o latestversion.py {raw_url}/{Config.UPSTREAM_BRANCH}/bot/version.py -s && python3 latestversion.py && rm latestversion.py",
                 True,
             )
         )[0]

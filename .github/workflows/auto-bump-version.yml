@@ -22,6 +22,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Capture triggering commit author
+        run: |
+          echo "GIT_AUTHOR_NAME=$(git log -1 --pretty=format:'%an')" >> $GITHUB_ENV
+          echo "GIT_AUTHOR_EMAIL=$(git log -1 --pretty=format:'%ae')" >> $GITHUB_ENV
+
       - name: Bump patch version
         shell: python
         run: |
@@ -51,8 +56,8 @@ jobs:
 
       - name: Commit bumped version
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "${GIT_AUTHOR_NAME}"
+          git config user.email "${GIT_AUTHOR_EMAIL}"
           git add bot/version.py
-          git commit -m "chore: bump version to v${NEXT_VERSION}-x" || exit 0
+          git commit -m "chore: bump version to v${NEXT_VERSION}-x [skip changelog]" || exit 0
           git push

@@ -13,8 +13,6 @@ from aiofiles import open as aiopen
 from aiofiles.os import path as aiopath
 from aiofiles.os import remove, rename
 from aioshutil import rmtree
-from pyrogram import Client
-from pyrogram.errors import PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded
 from pyrogram.filters import create
 from pyrogram.handlers import MessageHandler
 
@@ -81,7 +79,6 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
     if key is None:
         buttons.data_button("Config Variables", "botset var")
         buttons.data_button("Private Files", "botset private open")
-        buttons.data_button("Generate Session", "botset gensession")
         buttons.data_button("Qbit Settings", "botset qbit")
         buttons.data_button("Aria2c Settings", "botset aria")
         buttons.data_button("Sabnzbd Settings", "botset nzb")
@@ -187,19 +184,6 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
 ┖ <b>Note:</b> Changing .netrc will not take effect for aria2c until restart."""
         if edit_mode:
             msg += "\n\n<i>Send the file name to delete the file, file to save the file & for new file create, follow below format.</i> \n\n<b>Format:</b> \nfile_name\n\ncontents of file</i>\n\n<b>Time Left :</b> <code>60 sec</code>"
-    elif key == "gensession":
-        buttons.data_button("Cancel", "botset back")
-        buttons.data_button("Close", "botset close")
-        msg = f"""<b>Generate USER_SESSION_STRING</b>
-
-This will use current config credentials:
-• TELEGRAM_API: <code>{Config.TELEGRAM_API}</code>
-• TELEGRAM_HASH: <code>{'Set' if Config.TELEGRAM_HASH else 'Not Set'}</code>
-
-Send the phone number with country code.
-Example: <code>+849xxxxxxxx</code>
-
-Timeout: 60 sec"""
     elif key == "aria":
         for k in list(aria2_options.keys())[start : 10 + start]:
             if k not in ["checksum", "index-out", "out", "pause", "select-file"]:
@@ -604,217 +588,6 @@ async def update_private_file(_, message, pre_message, key, new_file=False):
     await database.update_private_file(file_name)
 
 
-async def ask_session_input(client, status_message, user_id, prompt, timeout=60):
-    chat_id = status_message.chat.id
-    response = {"message": None}
-    buttons = ButtonMaker()
-    buttons.data_button("Cancel", "botset back")
-    buttons.data_button("Close", "botset close")
-    await edit_message(status_message, prompt, buttons.build_menu(2))
-
-    async def event_filter(_, __, event):
-        user = event.from_user or event.sender_chat
-        return bool(user.id == user_id and event.chat.id == chat_id and event.text)
-
-    async def collect(_, message):
-        response["message"] = message
-        handler_dict[chat_id] = False
-
-    handler_dict[chat_id] = True
-    handler = client.add_handler(MessageHandler(collect, filters=create(event_filter)), group=-1)
-    start_time = time()
-    while handler_dict[chat_id]:
-        await sleep(0.5)
-        if time() - start_time > timeout:
-            handler_dict[chat_id] = False
-    client.remove_handler(*handler)
-    return response["message"]
-
-
-def session_result_buttons():
-    buttons = ButtonMaker()
-    buttons.data_button("Back", "botset back")
-    buttons.data_button("Close", "botset close")
-    return buttons.build_menu(2)
-
-
-async def update_session_status(message, text):
-    buttons = ButtonMaker()
-    buttons.data_button("Cancel", "botset back")
-    buttons.data_button("Close", "botset close")
-    await edit_message(message, text, buttons.build_menu(2))
-
-
-async def generate_user_session(client, query):
-    chat_id = query.message.chat.id
-    user_id = query.from_user.id
-    handler_dict[chat_id] = False
-    await query.answer()
-
-    if not Config.TELEGRAM_API or not Config.TELEGRAM_HASH:
-        return await edit_message(
-            query.message,
-            "TELEGRAM_API or TELEGRAM_HASH is missing in config. Please set them first.",
-            session_result_buttons(),
-        )
-
-    status_message = await send_message(
-        query.message,
-        "<b>Generate USER_SESSION_STRING</b>\n\nPreparing session generator...",
-    )
-
-    pyro_client = Client(
-        name=f"wz_session_{user_id}",
-        api_id=Config.TELEGRAM_API,
-        api_hash=Config.TELEGRAM_HASH,
-        in_memory=True,
-        app_version="@WZML_X User Session",
-        device_model="@WZML_X Bot V3",
-        system_version="@WZML_X Pyro Server",
-    )
-
-    try:
-        phone_msg = await ask_session_input(
-            client,
-            status_message,
-            user_id,
-            f"""<b>Generate USER_SESSION_STRING</b>
-
-<b>Step 1/3:</b> Send phone number with country code.
-Example: <code>+849xxxxxxxx</code>
-
-TELEGRAM_API: <code>{Config.TELEGRAM_API}</code>
-TELEGRAM_HASH: <code>{'Set' if Config.TELEGRAM_HASH else 'Not Set'}</code>
-
-Timeout: <code>60 sec</code>""",
-        )
-        if not phone_msg:
-            return await edit_message(
-                status_message,
-                "Session generation timed out while waiting for phone number.",
-                session_result_buttons(),
-            )
-
-        phone_number = phone_msg.text.strip()
-        await delete_message(phone_msg)
-        await update_session_status(
-            status_message,
-            "<b>Generate USER_SESSION_STRING</b>\n\nSending Telegram login code...",
-        )
-
-        await pyro_client.connect()
-        sent_code = await pyro_client.send_code(phone_number)
-        signed_in = False
-        last_code_error = ""
-
-        for attempt in range(2):
-            code_msg = await ask_session_input(
-                client,
-                status_message,
-                user_id,
-                f"""<b>Generate USER_SESSION_STRING</b>
-
-<b>Step 2/3:</b> Telegram sent a login code.
-Send the newest code here. Spaces are allowed, e.g. <code>1 2 3 4 5</code>.
-{last_code_error}
-Timeout: <code>60 sec</code>""",
-            )
-            if not code_msg:
-                return await edit_message(
-                    status_message,
-                    "Session generation timed out while waiting for login code.",
-                    session_result_buttons(),
-                )
-            phone_code = "".join(filter(str.isdigit, code_msg.text))
-            await delete_message(code_msg)
-
-            if not phone_code:
-                last_code_error = "\n<b>Last error:</b> No digits found in your code. Please send the code again.\n"
-                continue
-
-            try:
-                await update_session_status(
-                    status_message,
-                    "<b>Generate USER_SESSION_STRING</b>\n\nVerifying login code...",
-                )
-                await pyro_client.sign_in(phone_number, sent_code.phone_code_hash, phone_code)
-                signed_in = True
-                break
-            except SessionPasswordNeeded:
-                await update_session_status(
-                    status_message,
-                    "<b>Generate USER_SESSION_STRING</b>\n\n2FA is enabled. Waiting for cloud password...",
-                )
-                pass_msg = await ask_session_input(
-                    client,
-                    status_message,
-                    user_id,
-                    """<b>Generate USER_SESSION_STRING</b>
-
-<b>Step 3/3:</b> 2FA password is enabled.
-Send your Telegram cloud password.
-
-Timeout: <code>60 sec</code>""",
-                )
-                if not pass_msg:
-                    return await edit_message(
-                        status_message,
-                        "Session generation timed out while waiting for 2FA password.",
-                        session_result_buttons(),
-                    )
-                await update_session_status(
-                    status_message,
-                    "<b>Generate USER_SESSION_STRING</b>\n\nChecking 2FA password...",
-                )
-                await pyro_client.check_password(pass_msg.text.strip())
-                signed_in = True
-                await delete_message(pass_msg)
-                break
-            except (PhoneCodeInvalid, PhoneCodeExpired) as e:
-                last_code_error = f"\n<b>Last error:</b> <code>{e}</code>\nPlease request/use the newest Telegram code and send it again.\n"
-                if isinstance(e, PhoneCodeExpired):
-                    await update_session_status(
-                        status_message,
-                        "<b>Generate USER_SESSION_STRING</b>\n\nLogin code expired. Requesting a fresh code...",
-                    )
-                    sent_code = await pyro_client.send_code(phone_number)
-
-        if not signed_in:
-            return await edit_message(
-                status_message,
-                "Could not verify the login code. Please start session generation again and use the newest Telegram code.",
-                session_result_buttons(),
-            )
-
-        await update_session_status(
-            status_message,
-            "<b>Generate USER_SESSION_STRING</b>\n\nExporting and saving session string...",
-        )
-        session_string = await pyro_client.export_session_string()
-        Config.set("USER_SESSION_STRING", session_string)
-        await database.update_config({"USER_SESSION_STRING": session_string})
-
-        with BytesIO(str.encode(session_string)) as out_file:
-            out_file.name = "USER_SESSION_STRING.txt"
-            await send_file(status_message, out_file)
-        await edit_message(
-            status_message,
-            "USER_SESSION_STRING generated and saved to config database. Restart bot for it to take effect.",
-            session_result_buttons(),
-        )
-    except Exception as e:
-        LOGGER.error(f"Failed to generate USER_SESSION_STRING: {e}", exc_info=True)
-        await edit_message(
-            status_message,
-            f"Failed to generate session: <code>{e}</code>",
-            session_result_buttons(),
-        )
-    finally:
-        handler_dict[chat_id] = False
-        if pyro_client.is_connected:
-            await pyro_client.disconnect()
-
-
 async def event_handler(client, query, pfunc, rfunc, document=False):
     chat_id = query.message.chat.id
     handler_dict[chat_id] = True
@@ -874,8 +647,6 @@ async def edit_bot_settings(client, query):
             show_alert=True,
         )
         await sync_jdownloader()
-    elif data[1] == "gensession":
-        await generate_user_session(client, query)
     elif data[1] in ["var", "aria", "qbit", "nzb", "nzbserver"] or data[1].startswith(
         "nzbser"
     ):

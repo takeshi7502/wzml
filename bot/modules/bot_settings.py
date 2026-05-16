@@ -2,7 +2,6 @@ from asyncio import (
     create_subprocess_exec,
     create_subprocess_shell,
     gather,
-    get_running_loop,
     sleep,
 )
 from functools import partial
@@ -720,13 +719,19 @@ Timeout: <code>60 sec</code>""",
         phone_code = code_msg.text.replace(" ", "").strip()
         await delete_message(code_msg)
 
+        signed_in = False
         try:
             await update_session_status(
                 query.message,
                 "<b>Generate USER_SESSION_STRING</b>\n\nVerifying login code...",
             )
             await pyro_client.sign_in(phone_number, sent_code.phone_code_hash, phone_code)
+            signed_in = True
         except SessionPasswordNeeded:
+            await update_session_status(
+                query.message,
+                "<b>Generate USER_SESSION_STRING</b>\n\n2FA is enabled. Waiting for cloud password...",
+            )
             pass_msg = await ask_session_input(
                 client,
                 query.message,
@@ -749,6 +754,7 @@ Timeout: <code>60 sec</code>""",
                 "<b>Generate USER_SESSION_STRING</b>\n\nChecking 2FA password...",
             )
             await pyro_client.check_password(pass_msg.text.strip())
+            signed_in = True
             await delete_message(pass_msg)
         except (PhoneCodeInvalid, PhoneCodeExpired) as e:
             return await edit_message(
@@ -757,12 +763,14 @@ Timeout: <code>60 sec</code>""",
                 session_result_buttons(),
             )
 
+        if not signed_in:
+            raise RuntimeError("Telegram authorization did not complete. Please try again.")
+
         await update_session_status(
             query.message,
             "<b>Generate USER_SESSION_STRING</b>\n\nExporting and saving session string...",
         )
-        loop = get_running_loop()
-        session_string = await loop.run_in_executor(None, pyro_client.export_session_string)
+        session_string = await pyro_client.export_session_string()
         Config.set("USER_SESSION_STRING", session_string)
         await database.update_config({"USER_SESSION_STRING": session_string})
 

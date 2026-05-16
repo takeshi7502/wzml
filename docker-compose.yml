@@ -1,8 +1,8 @@
 services:
   app:
-    image: ghcr.io/takeshi7502/wzml:latest
+    build: .
     command: bash start.sh
-    restart: unless-stopped
+    restart: "no"
     ports:
       - "8080:8080"
 

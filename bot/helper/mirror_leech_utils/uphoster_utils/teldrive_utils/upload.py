@@ -73,7 +73,7 @@ class TeldriveUpload:
         self.api_url = (
             user_dict.get("TELDRIVE_API_URL")
             or Config.TELDRIVE_API_URL
-            or "https://teledrive.takeshi.dev"
+            or ""
         ).rstrip("/")
         if self.api_url.endswith("/api"):
             self.api_url = self.api_url[:-4]

@@ -73,6 +73,28 @@ DEFAULT_VALUES = {
     "USER_MAX_TASKS": 0,
 }
 
+UPHOSTER_CONFIG_VARS = {
+    "BUZZHEAVIER_API",
+    "FILELION_API",
+    "GOFILE_API",
+    "GOFILE_FOLDER_ID",
+    "PIXELDRAIN_KEY",
+    "STREAMWISH_API",
+    "TELECLOUD_API_URL",
+    "TELECLOUD_API_KEY",
+    "TELECLOUD_PATH",
+    "TELECLOUD_SHARE",
+    "TELECLOUD_ASYNC",
+    "TELECLOUD_OVERWRITE",
+    "TELDRIVE_API_URL",
+    "TELDRIVE_API_KEY",
+    "TELDRIVE_PATH",
+    "TELDRIVE_SHARE",
+    "TELDRIVE_OVERWRITE",
+    "TELDRIVE_CHANNEL_ID",
+    "TELDRIVE_SPLIT_SIZE",
+}
+
 
 async def get_buttons(key=None, edit_type=None, edit_mode=False):
     buttons = ButtonMaker()
@@ -135,7 +157,9 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
             else:
                 msg = f"Send a valid value for {key} in server {Config.USENET_SERVERS[index]['name']}. Current value is {Config.USENET_SERVERS[index][key]}. Timeout: 60 sec"
     elif key == "var":
-        conf_dict = Config.get_all()
+        conf_dict = {
+            k: v for k, v in Config.get_all().items() if k not in UPHOSTER_CONFIG_VARS
+        }
         for k in list(conf_dict.keys())[start : 10 + start]:
             if k == "DATABASE_URL" and state != "view":
                 continue

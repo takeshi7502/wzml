@@ -704,7 +704,7 @@ async def get_user_settings(from_user, stype="main"):
         td_url = user_dict.get("TELDRIVE_API_URL") or Config.TELDRIVE_API_URL or "None"
         td_key = "Exists" if (user_dict.get("TELDRIVE_API_KEY") or Config.TELDRIVE_API_KEY) else "None"
         td_path = user_dict.get("TELDRIVE_PATH") or Config.TELDRIVE_PATH or "/"
-        td_channel = user_dict.get("TELDRIVE_CHANNEL_ID") or Config.TELDRIVE_CHANNEL_ID or "Default"
+        td_channel = user_dict.get("TELDRIVE_CHANNEL_ID") or Config.TELDRIVE_CHANNEL_ID or "None"
         td_split = user_dict.get("TELDRIVE_SPLIT_SIZE") or Config.TELDRIVE_SPLIT_SIZE or "500mb"
         text = f"""⌬ <b>Teldrive Settings :</b>
 ┟ <b>Name</b> → {user_name}

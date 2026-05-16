@@ -60,7 +60,7 @@ class TeleCloudUpload:
         self.api_url = (
             user_dict.get("TELECLOUD_API_URL")
             or Config.TELECLOUD_API_URL
-            or "https://cloud.takeshi.dev/api/upload-api/upload"
+            or ""
         ).rstrip("/")
         self.upload_api_url = self.api_url
         self.api_key = user_dict.get("TELECLOUD_API_KEY") or Config.TELECLOUD_API_KEY

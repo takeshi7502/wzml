@@ -492,12 +492,13 @@ class HyperTGDownload:
                 dump_chat = int(dump_chat)
 
             if dump_chat:
+                copy_client = TgClient.user or TgClient.bot
                 try:
-                    await TgClient.bot.get_chat(dump_chat)
+                    await copy_client.get_chat(dump_chat)
                 except Exception as e:
                     LOGGER.warning(f"Failed to pre-resolve dump chat {dump_chat}: {e}")
 
-                self.message = await TgClient.bot.copy_message(
+                self.message = await copy_client.copy_message(
                     chat_id=dump_chat,
                     from_chat_id=message.chat.id,
                     message_id=message.id,
@@ -505,7 +506,8 @@ class HyperTGDownload:
                 )
                 LOGGER.info(
                     f"Copied Telegram media to dump chat {dump_chat} as "
-                    f"message {self.message.id}"
+                    f"message {self.message.id} using "
+                    f"{getattr(copy_client.me, 'username', 'user')}"
                 )
                 await sleep(3)
 

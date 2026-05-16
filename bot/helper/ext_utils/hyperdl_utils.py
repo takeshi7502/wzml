@@ -52,6 +52,14 @@ class HyperTGDownload:
 
     @staticmethod
     async def get_media_type(message):
+        if not message:
+            raise ValueError("Empty message returned while resolving media")
+
+        if getattr(message, "media", None):
+            media_name = message.media.value
+            if media := getattr(message, media_name, None):
+                return media
+
         media_types = (
             "audio",
             "document",
@@ -66,7 +74,14 @@ class HyperTGDownload:
         for attr in media_types:
             if media := getattr(message, attr, None):
                 return media
-        raise ValueError("This message doesn't contain any downloadable media")
+
+        raise ValueError(
+            "This message doesn't contain any downloadable media "
+            f"(id={getattr(message, 'id', None)}, "
+            f"media={getattr(getattr(message, 'media', None), 'value', None)}, "
+            f"text={bool(getattr(message, 'text', None))}, "
+            f"caption={bool(getattr(message, 'caption', None))})"
+        )
 
     def _update_cache(self, index, file_ref):
         self.cache_file_ref[index] = file_ref
@@ -83,14 +98,18 @@ class HyperTGDownload:
 
         while retries < max_retries:
             try:
-                media = await client.get_messages(self.dump_chat, mid)
-                return FileId.decode(
-                    getattr(await self.get_media_type(media), "file_id", "")
-                )
+                media_message = await client.get_messages(self.dump_chat, mid)
+                media_obj = await self.get_media_type(media_message)
+                return FileId.decode(getattr(media_obj, "file_id", ""))
             except Exception as e:
                 last_error = e
                 retries += 1
-                await sleep(1 * retries)
+                LOGGER.warning(
+                    f"Retry {retries}/{max_retries}: failed to resolve media "
+                    f"message {mid} from {self.dump_chat} with "
+                    f"Client {getattr(client.me, 'username', 'unknown')}: {e}"
+                )
+                await sleep(2 * retries)
 
         LOGGER.error(
             f"Failed to get message {mid} from {self.dump_chat} with Client {client.me.username}"
@@ -469,13 +488,26 @@ class HyperTGDownload:
         dump_chat=None,
     ):
         try:
+            if isinstance(dump_chat, str) and dump_chat.lstrip("-").isdigit():
+                dump_chat = int(dump_chat)
+
             if dump_chat:
+                try:
+                    await TgClient.bot.get_chat(dump_chat)
+                except Exception as e:
+                    LOGGER.warning(f"Failed to pre-resolve dump chat {dump_chat}: {e}")
+
                 self.message = await TgClient.bot.copy_message(
                     chat_id=dump_chat,
                     from_chat_id=message.chat.id,
                     message_id=message.id,
                     disable_notification=True,
                 )
+                LOGGER.info(
+                    f"Copied Telegram media to dump chat {dump_chat} as "
+                    f"message {self.message.id}"
+                )
+                await sleep(3)
 
             self.dump_chat = dump_chat or message.chat.id
             self.message = self.message or message

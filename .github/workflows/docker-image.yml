@@ -1,10 +1,6 @@
 name: Build and Push Docker Image
 
 on:
-  push:
-    branches:
-      - wzv3
-      - main
   workflow_dispatch:
 
 permissions:

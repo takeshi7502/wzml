@@ -19,6 +19,7 @@ from .bot_utils import get_telegraph_list, sync_to_async, safe_int
 from .files_utils import get_base_name, check_storage_threshold
 from .links_utils import is_gdrive_id
 from .status_utils import get_readable_time, get_readable_file_size, get_specific_tasks
+from .user_quota_manager import quota_precheck
 
 
 async def stop_duplicate_check(listener):
@@ -293,6 +294,10 @@ async def pre_task_check(message):
     token_msg, button = await verify_token(user_id, button)
     if token_msg is not None:
         msg.append(token_msg)
+
+    quota_msg = await quota_precheck(message)
+    if quota_msg is not None:
+        msg.append(quota_msg)
 
     if msg:
         username = message.from_user.mention

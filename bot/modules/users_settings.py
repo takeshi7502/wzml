@@ -24,6 +24,7 @@ from ..helper.ext_utils.bot_utils import (
 )
 from ..helper.ext_utils.db_handler import database
 from ..helper.ext_utils.media_utils import create_thumb
+from ..helper.ext_utils.user_quota_manager import quota_summary
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.message_utils import (
     delete_message,
@@ -378,11 +379,14 @@ async def get_user_settings(from_user, stype="main"):
             )
         buttons.data_button("Close", f"userset {user_id} close", position="footer")
 
+        quota = quota_summary(user_id)
+        user_display = f"{user_name} (#ID{user_id})"
         text = f"""⌬ <b>User Settings :</b>
-│
-┟ <b>Name</b> → {user_name}
-┠ <b>UserID</b> → #ID{user_id}
-┠ <b>Username</b> → @{from_user.username}
+┃
+┟ <b>Name</b> → {user_display}
+┠ <b>Daily Free</b> → {quota['daily_limit'] - quota['daily_used']} / {quota['daily_limit']}
+┠ <b>Extra Quota</b> → {quota['extra_quota']}
+┠ <b>Reset After</b> → {quota['reset_after']}
 ┠ <b>Telegram DC</b> → {from_user.dc_id}
 ┖ <b>Telegram Lang</b> → {Language.get(lc).display_name() if (lc := from_user.language_code) else "N/A"}"""
 

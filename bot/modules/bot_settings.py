@@ -42,6 +42,12 @@ from ..core.tg_client import TgClient
 from ..core.torrent_manager import TorrentManager
 from ..core.startup import update_qb_options, update_nzb_options, update_variables
 from ..helper.ext_utils.db_handler import database
+from ..helper.ext_utils.user_quota_manager import (
+    quota_add_extra,
+    quota_clear_pending,
+    quota_get_usage,
+    quota_reset_today,
+)
 from ..core.jdownloader_booter import jdownloader
 from ..helper.ext_utils.task_manager import start_from_queued
 from ..helper.mirror_leech_utils.rclone_utils.serve import rclone_serve_booter
@@ -71,6 +77,7 @@ DEFAULT_VALUES = {
     "QUEUE_DOWNLOAD": 0,
     "QUEUE_UPLOAD": 0,
     "USER_MAX_TASKS": 0,
+    "USER_QUOTA_DAILY_LIMIT": 20,
 }
 
 UPHOSTER_CONFIG_VARS = {
@@ -105,6 +112,7 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
         buttons.data_button("Aria2c Settings", "botset aria")
         buttons.data_button("Sabnzbd Settings", "botset nzb")
         buttons.data_button("JDownloader Sync", "botset syncjd")
+        buttons.data_button("User Quota", "botset quota")
         buttons.data_button("Close", "botset close")
         msg = "Bot Settings:"
     elif edit_type is not None:
@@ -125,6 +133,10 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
             ]:
                 msg += "Restart required for this edit to take effect! You will not see the changes in bot vars, the edit will be in database only!\n\n"
             msg += f"Send a valid value for {key}. Current value is '{Config.get(key)}'. Timeout: 60 sec"
+        elif edit_type == "quotavar":
+            buttons.data_button("Back", "botset quota")
+            buttons.data_button("Close", "botset close")
+            msg = f"Send a valid value for {key}. Current value is '{Config.get(key)}'. Timeout: 60 sec"
         elif edit_type == "ariavar":
             buttons.data_button("Back", "botset aria")
             if key != "newkey":
@@ -288,6 +300,20 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
                     f"{int(x / 10)}", f"botset start {key} {x}", position="footer"
                 )
         msg = f"Server Keys | Page: {int(start / 10)} | State: {state}"
+    elif key == "quota":
+        buttons.data_button("Toggle User Quota", "botset quotatoggle")
+        buttons.data_button("Daily Free Limit", "botset quotaedit USER_QUOTA_DAILY_LIMIT")
+        buttons.data_button("Reset Time", "botset quotaedit USER_QUOTA_RESET_HOUR")
+        buttons.data_button("View User Usage", "botset quotaaction view")
+        buttons.data_button("Back", "botset back")
+        buttons.data_button("Close", "botset close")
+        status = "Enabled" if Config.USER_QUOTA_ENABLED else "Disabled"
+        msg = f"""⌬ <b>User Quota Settings :</b>
+│
+┟ <b>Status</b> → {status}
+┠ <b>Daily Free Limit</b> → {Config.USER_QUOTA_DAILY_LIMIT} / day
+┠ <b>Reset Time</b> → {Config.USER_QUOTA_RESET_HOUR:02}:00 {Config.TIMEZONE}
+┖ <b>Pending Timeout</b> → {round(Config.USER_QUOTA_PENDING_TIMEOUT / 3600)}h"""
 
     return msg, buttons.build_menu(1 if key is None else 2)
 
@@ -412,6 +438,87 @@ async def edit_variable(_, message, pre_message, key):
     elif key == "USET_SERVERS":
         for s in value:
             await sabnzbd_client.set_special_config("servers", s)
+
+
+@new_task
+async def edit_quota_limit(_, message, pre_message, key):
+    handler_dict[message.chat.id] = False
+    value = message.text.strip()
+    if not value.isdigit():
+        await send_message(message, "Invalid value. Send a number.")
+        return await update_buttons(pre_message, "quota")
+    value = int(value)
+    if key == "USER_QUOTA_RESET_HOUR" and not 0 <= value <= 23:
+        await send_message(message, "Invalid value. Reset Time must be an hour from 0 to 23.")
+        return await update_buttons(pre_message, "quota")
+    Config.set(key, value)
+    await update_buttons(pre_message, "quota")
+    await delete_message(message)
+    await database.update_config({key: value})
+
+
+@new_task
+async def edit_quota_user(client, message, pre_message, action):
+    handler_dict[message.chat.id] = False
+    try:
+        user_id = int(message.text.split()[0])
+    except Exception:
+        await edit_quota_prompt(pre_message, action, "Invalid input. Use: <code>user_id</code>")
+        await delete_message(message)
+        return
+
+    user = await get_quota_user(client, user_id)
+    if action == "clear":
+        await quota_clear_pending(user_id)
+    await show_quota_user_menu(pre_message, user_id, user)
+    await delete_message(message)
+
+
+async def get_quota_user(client, user_id):
+    try:
+        return await client.get_users(user_id)
+    except Exception:
+        return None
+
+
+async def show_quota_user_menu(message, user_id, user=None):
+    text = await quota_get_usage(user_id, user=user)
+    buttons = ButtonMaker()
+    buttons.data_button("Reset Quota", f"botset quotauser reset {user_id}")
+    buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id}")
+    buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id}")
+    buttons.data_button("Change User", "botset quotaaction view")
+    buttons.data_button("Back", "botset quota")
+    buttons.data_button("Close", "botset close")
+    await edit_message(message, text, buttons.build_menu(2))
+
+
+@new_task
+async def edit_quota_extra_amount(_, message, pre_message, prompt_message, user_id, action, user=None):
+    handler_dict[message.chat.id] = False
+    try:
+        amount = int(message.text.split()[0])
+    except Exception:
+        await delete_message(message)
+        await delete_message(prompt_message)
+        return await show_quota_user_menu(pre_message, user_id, user)
+
+    if action == "remove":
+        amount = -amount
+    await quota_add_extra(user_id, amount)
+    await delete_message(message)
+    await delete_message(prompt_message)
+    await show_quota_user_menu(pre_message, user_id, user)
+
+
+async def edit_quota_prompt(message, action, error=None):
+    msg = "Send user ID. Timeout: 60 sec"
+    if error:
+        msg = f"{error}\n\n{msg}"
+    buttons = ButtonMaker()
+    buttons.data_button("Back", "botset quota")
+    buttons.data_button("Close", "botset close")
+    await edit_message(message, msg, buttons.build_menu(2))
 
 
 @new_task
@@ -671,7 +778,7 @@ async def edit_bot_settings(client, query):
             show_alert=True,
         )
         await sync_jdownloader()
-    elif data[1] in ["var", "aria", "qbit", "nzb", "nzbserver"] or data[1].startswith(
+    elif data[1] in ["var", "aria", "qbit", "nzb", "nzbserver", "quota"] or data[1].startswith(
         "nzbser"
     ):
         if data[1] == "nzbserver":
@@ -916,6 +1023,47 @@ async def edit_bot_settings(client, query):
         await query.answer()
         globals()["state"] = "view"
         await update_buttons(message, data[2])
+    elif data[1] == "quotatoggle":
+        await query.answer()
+        Config.USER_QUOTA_ENABLED = not Config.USER_QUOTA_ENABLED
+        await database.update_config({"USER_QUOTA_ENABLED": Config.USER_QUOTA_ENABLED})
+        await update_buttons(message, "quota")
+    elif data[1] == "quotaedit":
+        await query.answer()
+        await update_buttons(message, data[2], "quotavar")
+        pfunc = partial(edit_quota_limit, pre_message=message, key=data[2])
+        rfunc = partial(update_buttons, message, "quota")
+        await event_handler(client, query, pfunc, rfunc)
+    elif data[1] == "quotaaction":
+        await query.answer()
+        action = data[2]
+        await edit_quota_prompt(message, action)
+        pfunc = partial(edit_quota_user, pre_message=message, action=action)
+        rfunc = partial(update_buttons, message, "quota")
+        await event_handler(client, query, pfunc, rfunc)
+    elif data[1] == "quotauser":
+        await query.answer()
+        action = data[2]
+        user_id = int(data[3])
+        user = await get_quota_user(client, user_id)
+        if action == "reset":
+            await quota_reset_today(user_id)
+            await show_quota_user_menu(message, user_id, user)
+        elif action in {"add", "remove"}:
+            prompt = await send_message(
+                message,
+                f"Send amount to {'add to' if action == 'add' else 'remove from'} extra quota for <code>{user_id}</code>. Timeout: 60 sec",
+            )
+            pfunc = partial(
+                edit_quota_extra_amount,
+                pre_message=message,
+                prompt_message=prompt,
+                user_id=user_id,
+                action=action,
+                user=user,
+            )
+            rfunc = partial(delete_message, prompt)
+            await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "start":
         await query.answer()
         if start != int(data[3]):

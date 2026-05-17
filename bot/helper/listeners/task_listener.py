@@ -41,6 +41,7 @@ from ..ext_utils.files_utils import (
 from ..ext_utils.links_utils import is_gdrive_id
 from ..ext_utils.status_utils import get_readable_file_size, get_readable_time
 from ..ext_utils.task_manager import check_running_tasks, start_from_queued
+from ..ext_utils.user_quota_manager import quota_confirm_task, quota_release_task
 from ..mirror_leech_utils.uphoster_utils.gofile_utils.upload import GoFileUpload
 from ..mirror_leech_utils.uphoster_utils.buzzheavier_utils.upload import (
     BuzzHeavierUpload,
@@ -412,6 +413,7 @@ class TaskListener(TaskConfig):
             and Config.DATABASE_URL
         ):
             await database.rm_complete_task(self.message.link)
+        await quota_confirm_task(self)
         msg = (
             f"<b><i>{escape(self.name)}</i></b>\n│"
             f"\n┟ <b>Task Size</b> → {get_readable_file_size(self.size)}"
@@ -595,6 +597,7 @@ class TaskListener(TaskConfig):
         await start_from_queued()
 
     async def on_download_error(self, error, button=None, is_limit=False):
+        await quota_release_task(self, "download_error")
         async with task_dict_lock:
             if self.mid in task_dict:
                 del task_dict[self.mid]
@@ -652,6 +655,7 @@ class TaskListener(TaskConfig):
             await remove(self.thumb)
 
     async def on_upload_error(self, error):
+        await quota_release_task(self, "upload_error")
         async with task_dict_lock:
             if self.mid in task_dict:
                 del task_dict[self.mid]

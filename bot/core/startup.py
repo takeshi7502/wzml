@@ -190,6 +190,11 @@ async def load_settings():
                     if row.get(key):
                         await save_file(path, row[key])
                         row[key] = path
+                if isinstance(row.get("USER_QUOTA"), dict):
+                    row["USER_QUOTA"]["pending"] = {}
+                    await database.db.users[BOT_ID].update_one(
+                        {"_id": uid}, {"$set": {"USER_QUOTA.pending": {}}}
+                    )
                 user_data[uid] = row
             LOGGER.info("Users Data has been imported from MongoDB")
 

@@ -1,6 +1,6 @@
 START_MSG = """
-This bot can mirror from links|tgfiles|torrents|nzb|rclone-cloud to any rclone cloud, Google Drive or to telegram.
-Type /{cmd} to get a list of available commands
+Fast mirror/leech bot for links, Telegram files, torrents, NZB and cloud uploads.
+Go to Groups to join a group and use the bot.
 """
 START_BUTTON1 = "Git Repo"
-START_BUTTON2 = "Updates"
+START_BUTTON2 = "Join Mirror Chat"

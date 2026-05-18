@@ -487,7 +487,6 @@ async def show_quota_user_menu(message, user_id, user=None):
     buttons.data_button("Reset Quota", f"botset quotauser reset {user_id}")
     buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id}")
     buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id}")
-    buttons.data_button("Change User", "botset quotaaction view")
     buttons.data_button("Back", "botset quota")
     buttons.data_button("Close", "botset close")
     await edit_message(message, text, buttons.build_menu(2))

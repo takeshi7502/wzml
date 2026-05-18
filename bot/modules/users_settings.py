@@ -24,9 +24,10 @@ from ..helper.ext_utils.bot_utils import (
 )
 from ..helper.ext_utils.db_handler import database
 from ..helper.ext_utils.media_utils import create_thumb
-from ..helper.ext_utils.user_quota_manager import quota_summary
+from ..helper.ext_utils.user_quota_manager import quota_get_usage, quota_summary
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.message_utils import (
+    auto_delete_message,
     delete_message,
     edit_message,
     send_file,
@@ -381,12 +382,19 @@ async def get_user_settings(from_user, stype="main"):
 
         quota = quota_summary(user_id)
         user_display = f"{user_name} (#ID{user_id})"
+        if user_id == Config.OWNER_ID or user_id in sudo_users:
+            daily_free = extra_quota = reset_after = "Unlimited"
+        else:
+            daily_free = f"{quota['daily_limit'] - quota['daily_used']} / {quota['daily_limit']}"
+            extra_quota = quota["extra_quota"]
+            reset_after = quota["reset_after"]
         text = f"""⌬ <b>User Settings :</b>
 ┃
 ┟ <b>Name</b> → {user_display}
-┠ <b>Daily Free</b> → {quota['daily_limit'] - quota['daily_used']} / {quota['daily_limit']}
-┠ <b>Extra Quota</b> → {quota['extra_quota']}
-┠ <b>Reset After</b> → {quota['reset_after']}
+┠ <b>Daily Free</b> → {daily_free}
+┠ <b>Extra Quota</b> → {extra_quota}
+┠ <b>Pending Tasks</b> → {quota['pending']}
+┠ <b>Reset After</b> → {reset_after}
 ┠ <b>Telegram DC</b> → {from_user.dc_id}
 ┖ <b>Telegram Lang</b> → {Language.get(lc).display_name() if (lc := from_user.language_code) else "N/A"}"""
 
@@ -1069,9 +1077,31 @@ async def update_user_settings(query, stype="main"):
 
 
 @new_task
-async def send_user_settings(_, message):
+async def send_user_settings(client, message):
     from_user = message.from_user
     handler_dict[from_user.id] = False
+    replied = message.reply_to_message
+    if (
+        replied
+        and (from_user.id == Config.OWNER_ID or from_user.id in sudo_users)
+        and (target_user := replied.from_user or replied.sender_chat)
+    ):
+        user_id = target_user.id
+        user = None
+        try:
+            user = await client.get_users(user_id)
+        except Exception:
+            user = target_user
+        text = await quota_get_usage(user_id, user=user)
+        buttons = ButtonMaker()
+        buttons.data_button("Reset Quota", f"botset quotauser reset {user_id}")
+        buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id}")
+        buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id}")
+        buttons.data_button("Close", "botset close")
+        quota_menu = await send_message(message, text, buttons.build_menu(2))
+        if not isinstance(quota_menu, str):
+            await auto_delete_message(quota_menu, stime=30)
+        return
     msg, button = await get_user_settings(from_user)
     await send_message(message, msg, button)
 

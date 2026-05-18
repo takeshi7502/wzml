@@ -14,6 +14,11 @@ from ..helper.ext_utils.bot_utils import new_task, update_user_ldata
 from ..helper.ext_utils.links_utils import decode_slink
 from ..helper.ext_utils.status_utils import get_readable_time
 from ..helper.ext_utils.db_handler import database
+from ..helper.ext_utils.referral_manager import (
+    complete_referral,
+    referral_notify_inviter,
+    set_pending_referral,
+)
 from ..helper.languages import Language
 from ..helper.telegram_helper.bot_commands import BotCommands
 from ..helper.telegram_helper.button_build import ButtonMaker
@@ -40,6 +45,22 @@ async def start(_, message):
 
     if len(message.command) > 1 and message.command[1] == "wzmlx":
         await delete_message(message)
+    elif len(message.command) > 1 and message.command[1].startswith("ref_"):
+        try:
+            inviter_id = int(message.command[1].split("_", 1)[1])
+        except Exception:
+            inviter_id = 0
+        ok, note = await set_pending_referral(userid, inviter_id)
+        buttons = ButtonMaker()
+        buttons.url_button("Join Mirror Chat", Config.REFERRAL_REQUIRED_CHAT_LINK or "https://t.me")
+        buttons.data_button("I Joined", "start referral_check")
+        msg = f"""⌬ <b>Referral Verification :</b>
+┃
+┠ <b>Status</b> → {escape(note)}
+┠ <b>Requirement</b> → Join Mirror Chat
+┖ <b>Reward</b> → inviter gets +{Config.REFERRAL_REWARD_QUOTA} Extra Quota"""
+        await database.set_pm_users(userid)
+        return await send_message(message, msg, buttons.build_menu(1))
     elif len(message.command) > 1 and message.command[1] != "start":
         decrypted_url = decode_slink(message.command[1])
         if Config.MEDIA_STORE and decrypted_url.startswith("file"):
@@ -108,7 +129,22 @@ async def start(_, message):
 @new_task
 async def start_cb(_, query):
     user_id = query.from_user.id
-    input_token = query.data.split()[2]
+    data_parts = query.data.split()
+    input_token = data_parts[2] if len(data_parts) > 2 else data_parts[1] if len(data_parts) > 1 else ""
+    if input_token == "referral_check":
+        ok, result = await complete_referral(_, user_id)
+        if not ok:
+            return await query.answer(result, show_alert=True)
+        reward = Config.REFERRAL_REWARD_QUOTA
+        await query.answer("Referral verified!", show_alert=True)
+        await referral_notify_inviter(result, query.from_user, reward)
+        buttons = ButtonMaker()
+        buttons.url_button("Mirror Chat", Config.REFERRAL_REQUIRED_CHAT_LINK)
+        return await edit_message(
+            query.message,
+            "⌬ <b>Verified :</b>\n┃\n┠ <b>Mirror Chat</b> → Joined\n┖ <b>Thanks for joining!</b>",
+            buttons.build_menu(1),
+        )
     data = user_data.get(user_id, {})
 
     if input_token == "activated":
@@ -208,7 +244,8 @@ async def log_cb(_, query):
                 if total > 3500:
                     break
 
-            text = f"<b>Showing Last {len(res)} Lines from log.txt:</b> \n\n----------<b>START LOG</b>----------\n\n<blockquote expandable>{escape('\n'.join(reversed(res)))}</blockquote>\n----------<b>END LOG</b>----------"
+            log_text = escape("\n".join(reversed(res)))
+            text = f"<b>Showing Last {len(res)} Lines from log.txt:</b> \n\n----------<b>START LOG</b>----------\n\n<blockquote expandable>{log_text}</blockquote>\n----------<b>END LOG</b>----------"
 
             btn = ButtonMaker()
             btn.data_button("Close", f"log {user_id} close")

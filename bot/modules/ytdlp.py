@@ -291,9 +291,7 @@ class YtDlp(TaskListener):
         check_msg, check_button = await pre_task_check(self.message)
         if check_msg:
             await delete_links(self.message)
-            await auto_delete_message(
-                await send_message(self.message, check_msg, check_button)
-            )
+            await send_message(self.message, check_msg, check_button)
             return
 
         args = {
@@ -376,7 +374,7 @@ class YtDlp(TaskListener):
         self.thumbnail_layout = args["-tl"]
         self.as_doc = args["-doc"]
         self.as_med = args["-med"]
-        self.folder_name = f"/{args["-m"]}".rstrip("/") if len(args["-m"]) > 0 else ""
+        self.folder_name = f"/{args['-m']}".rstrip("/") if len(args["-m"]) > 0 else ""
         self.bot_trans = args["-bt"]
         self.user_trans = args["-ut"]
         self.metadata_dict = self.default_metadata_dict.copy()

@@ -48,6 +48,7 @@ from ..helper.ext_utils.user_quota_manager import (
     quota_get_usage,
     quota_reset_today,
 )
+from ..helper.ext_utils.referral_manager import referral_settings_text, referral_usage_text
 from ..core.jdownloader_booter import jdownloader
 from ..helper.ext_utils.task_manager import start_from_queued
 from ..helper.mirror_leech_utils.rclone_utils.serve import rclone_serve_booter
@@ -113,6 +114,7 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
         buttons.data_button("Sabnzbd Settings", "botset nzb")
         buttons.data_button("JDownloader Sync", "botset syncjd")
         buttons.data_button("User Quota", "botset quota")
+        buttons.data_button("Referral Manager", "botset referral")
         buttons.data_button("Close", "botset close")
         msg = "Bot Settings:"
     elif edit_type is not None:
@@ -135,6 +137,10 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
             msg += f"Send a valid value for {key}. Current value is '{Config.get(key)}'. Timeout: 60 sec"
         elif edit_type == "quotavar":
             buttons.data_button("Back", "botset quota")
+            buttons.data_button("Close", "botset close")
+            msg = f"Send a valid value for {key}. Current value is '{Config.get(key)}'. Timeout: 60 sec"
+        elif edit_type == "referralvar":
+            buttons.data_button("Back", "botset referral")
             buttons.data_button("Close", "botset close")
             msg = f"Send a valid value for {key}. Current value is '{Config.get(key)}'. Timeout: 60 sec"
         elif edit_type == "ariavar":
@@ -314,6 +320,15 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
 ┠ <b>Daily Free Limit</b> → {Config.USER_QUOTA_DAILY_LIMIT} / day
 ┠ <b>Reset Time</b> → {Config.USER_QUOTA_RESET_HOUR:02}:00 {Config.TIMEZONE}
 ┖ <b>Pending Timeout</b> → {round(Config.USER_QUOTA_PENDING_TIMEOUT / 3600)}h"""
+    elif key == "referral":
+        buttons.data_button("Toggle Referral", "botset referraltoggle")
+        buttons.data_button("Reward Quota", "botset referraledit REFERRAL_REWARD_QUOTA")
+        buttons.data_button("Required Chat ID", "botset referraledit REFERRAL_REQUIRED_CHAT_ID")
+        buttons.data_button("Required Chat Link", "botset referraledit REFERRAL_REQUIRED_CHAT_LINK")
+        buttons.data_button("Usage", "botset referralusage 0")
+        buttons.data_button("Back", "botset back")
+        buttons.data_button("Close", "botset close")
+        msg = referral_settings_text()
 
     return msg, buttons.build_menu(1 if key is None else 2)
 
@@ -458,6 +473,26 @@ async def edit_quota_limit(_, message, pre_message, key):
 
 
 @new_task
+async def edit_referral_value(_, message, pre_message, prompt_message, key):
+    handler_dict[message.chat.id] = False
+    value = message.text.strip()
+    try:
+        if key in ["REFERRAL_REWARD_QUOTA", "REFERRAL_REQUIRED_CHAT_ID"]:
+            value = int(value.split()[0])
+            if key == "REFERRAL_REWARD_QUOTA":
+                value = max(0, value)
+    except Exception:
+        await delete_message(message)
+        await delete_message(prompt_message)
+        return await update_buttons(pre_message, "referral")
+    Config.set(key, value)
+    await database.update_config({key: value})
+    await delete_message(message)
+    await delete_message(prompt_message)
+    await update_buttons(pre_message, "referral")
+
+
+@new_task
 async def edit_quota_user(client, message, pre_message, action):
     handler_dict[message.chat.id] = False
     try:
@@ -481,12 +516,14 @@ async def get_quota_user(client, user_id):
         return None
 
 
-async def show_quota_user_menu(message, user_id, user=None):
+async def show_quota_user_menu(message, user_id, user=None, owner_id=0):
     text = await quota_get_usage(user_id, user=user)
     buttons = ButtonMaker()
-    buttons.data_button("Reset Quota", f"botset quotauser reset {user_id}")
-    buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id}")
-    buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id}")
+    reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
+    owner_id = owner_id or getattr(reply_user, "id", 0) or user_id
+    buttons.data_button("Reset Quota", f"botset quotauser reset {user_id} {owner_id}")
+    buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id} {owner_id}")
+    buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id} {owner_id}")
     buttons.data_button("Back", "botset quota")
     buttons.data_button("Close", "botset close")
     await edit_message(message, text, buttons.build_menu(2))
@@ -500,14 +537,14 @@ async def edit_quota_extra_amount(_, message, pre_message, prompt_message, user_
     except Exception:
         await delete_message(message)
         await delete_message(prompt_message)
-        return await show_quota_user_menu(pre_message, user_id, user)
+        return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
 
     if action == "remove":
         amount = -amount
     await quota_add_extra(user_id, amount)
     await delete_message(message)
     await delete_message(prompt_message)
-    await show_quota_user_menu(pre_message, user_id, user)
+    await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
 
 
 async def edit_quota_prompt(message, action, error=None):
@@ -777,7 +814,7 @@ async def edit_bot_settings(client, query):
             show_alert=True,
         )
         await sync_jdownloader()
-    elif data[1] in ["var", "aria", "qbit", "nzb", "nzbserver", "quota"] or data[1].startswith(
+    elif data[1] in ["var", "aria", "qbit", "nzb", "nzbserver", "quota", "referral"] or data[1].startswith(
         "nzbser"
     ):
         if data[1] == "nzbserver":
@@ -1033,6 +1070,37 @@ async def edit_bot_settings(client, query):
         pfunc = partial(edit_quota_limit, pre_message=message, key=data[2])
         rfunc = partial(update_buttons, message, "quota")
         await event_handler(client, query, pfunc, rfunc)
+    elif data[1] == "referraltoggle":
+        await query.answer()
+        Config.REFERRAL_ENABLED = not Config.REFERRAL_ENABLED
+        await database.update_config({"REFERRAL_ENABLED": Config.REFERRAL_ENABLED})
+        await update_buttons(message, "referral")
+    elif data[1] == "referraledit":
+        await query.answer()
+        prompt = await send_message(
+            message,
+            f"Send value for <code>{data[2]}</code>. Current: <code>{Config.get(data[2])}</code>. Timeout: 60 sec",
+        )
+        pfunc = partial(
+            edit_referral_value,
+            pre_message=message,
+            prompt_message=prompt,
+            key=data[2],
+        )
+        rfunc = partial(delete_message, prompt)
+        await event_handler(client, query, pfunc, rfunc)
+    elif data[1] == "referralusage":
+        await query.answer()
+        page = max(0, int(data[2]))
+        text, total = referral_usage_text(page)
+        buttons = ButtonMaker()
+        if page > 0:
+            buttons.data_button("Prev", f"botset referralusage {page - 1}")
+        if total > (page + 1) * 5:
+            buttons.data_button("Next", f"botset referralusage {page + 1}")
+        buttons.data_button("Back", "botset referral")
+        buttons.data_button("Close", "botset close")
+        await edit_message(message, text, buttons.build_menu(2))
     elif data[1] == "quotaaction":
         await query.answer()
         action = data[2]
@@ -1044,10 +1112,13 @@ async def edit_bot_settings(client, query):
         await query.answer()
         action = data[2]
         user_id = int(data[3])
+        owner_id = int(data[4]) if len(data) > 4 else query.from_user.id
+        if query.from_user.id != owner_id:
+            return await query.answer("Not Yours!", show_alert=True)
         user = await get_quota_user(client, user_id)
         if action == "reset":
             await quota_reset_today(user_id)
-            await show_quota_user_menu(message, user_id, user)
+            await show_quota_user_menu(message, user_id, user, owner_id)
         elif action in {"add", "remove"}:
             prompt = await send_message(
                 message,

@@ -25,6 +25,13 @@ from ..helper.ext_utils.bot_utils import (
 from ..helper.ext_utils.db_handler import database
 from ..helper.ext_utils.media_utils import create_thumb
 from ..helper.ext_utils.user_quota_manager import quota_get_usage, quota_summary
+from ..helper.telegram_helper.filters import CustomFilters
+from ..helper.ext_utils.referral_manager import (
+    referral_enabled,
+    referral_invite_link,
+    referral_share_link,
+    referral_stats,
+)
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.message_utils import (
     auto_delete_message,
@@ -378,27 +385,46 @@ async def get_user_settings(from_user, stype="main"):
             buttons.data_button(
                 "Reset All", f"userset {user_id} confirm_reset_all", position="footer"
             )
+        if referral_enabled() and user_id != Config.OWNER_ID and user_id not in sudo_users:
+            buttons.data_button("Invite Friends", f"userset {user_id} referral", position="footer")
         buttons.data_button("Close", f"userset {user_id} close", position="footer")
 
         quota = quota_summary(user_id)
         user_display = f"{user_name} (#ID{user_id})"
         if user_id == Config.OWNER_ID or user_id in sudo_users:
-            daily_free = extra_quota = reset_after = "Unlimited"
+            daily_free = extra_quota = pending_tasks = reset_after = "Unlimited"
         else:
             daily_free = f"{quota['daily_limit'] - quota['daily_used']} / {quota['daily_limit']}"
             extra_quota = quota["extra_quota"]
+            pending_tasks = quota["pending"]
             reset_after = quota["reset_after"]
         text = f"""⌬ <b>User Settings :</b>
 ┃
 ┟ <b>Name</b> → {user_display}
 ┠ <b>Daily Free</b> → {daily_free}
 ┠ <b>Extra Quota</b> → {extra_quota}
-┠ <b>Pending Tasks</b> → {quota['pending']}
+┠ <b>Pending Tasks</b> → {pending_tasks}
 ┠ <b>Reset After</b> → {reset_after}
 ┠ <b>Telegram DC</b> → {from_user.dc_id}
-┖ <b>Telegram Lang</b> → {Language.get(lc).display_name() if (lc := from_user.language_code) else "N/A"}"""
+┠ <b>Telegram Lang</b> → {Language.get(lc).display_name() if (lc := from_user.language_code) else "N/A"}
+┖ <b><i>You can use this command in DM!</i></b>"""
 
         btns = buttons.build_menu(2)
+
+    elif stype == "referral":
+        invite_link = referral_invite_link(user_id)
+        share_link = referral_share_link(user_id)
+        success = referral_stats(user_id)
+        buttons.url_button("Share Link", share_link or invite_link or "https://t.me")
+        buttons.data_button("Back", f"userset {user_id} back", "footer")
+        buttons.data_button("Close", f"userset {user_id} close", "footer")
+        btns = buttons.build_menu(1)
+        text = f"""⌬ <b>Invite Friends :</b>
+┃
+┟ <b>Invite Link</b> → <code>{invite_link or 'Unavailable'}</code>
+┠ <b>Reward</b> → +{Config.REFERRAL_REWARD_QUOTA} Extra Quota / verified user
+┠ <b>Requirement</b> → Friend must join Mirror Chat
+┖ <b>Your Referrals</b> → {success} successful"""
 
     elif stype == "general":
         if user_dict.get("DEFAULT_UPLOAD", ""):
@@ -1079,6 +1105,8 @@ async def update_user_settings(query, stype="main"):
 @new_task
 async def send_user_settings(client, message):
     from_user = message.from_user
+    if message.chat.type.name != "PRIVATE" and not await CustomFilters.authorized_uset(client, message):
+        return
     handler_dict[from_user.id] = False
     replied = message.reply_to_message
     if (
@@ -1094,16 +1122,18 @@ async def send_user_settings(client, message):
             user = target_user
         text = await quota_get_usage(user_id, user=user)
         buttons = ButtonMaker()
-        buttons.data_button("Reset Quota", f"botset quotauser reset {user_id}")
-        buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id}")
-        buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id}")
+        buttons.data_button("Reset Quota", f"botset quotauser reset {user_id} {from_user.id}")
+        buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id} {from_user.id}")
+        buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id} {from_user.id}")
         buttons.data_button("Close", "botset close")
         quota_menu = await send_message(message, text, buttons.build_menu(2))
         if not isinstance(quota_menu, str):
-            await auto_delete_message(quota_menu, stime=30)
+            await auto_delete_message(quota_menu, message, stime=30)
         return
     msg, button = await get_user_settings(from_user)
-    await send_message(message, msg, button)
+    user_menu = await send_message(message, msg, button)
+    if message.chat.type.name != "PRIVATE" and not isinstance(user_menu, str):
+        await auto_delete_message(user_menu, message, stime=100)
 
 
 @new_task
@@ -1424,7 +1454,7 @@ async def edit_user_settings(client, query):
     yt_cookie_path = f"cookies/{user_id}/cookies.txt"
 
     user_dict = user_data.get(user_id, {})
-    if user_id != int(data[1]):
+    if len(data) > 1 and user_id != int(data[1]):
         return await query.answer("Not Yours!", show_alert=True)
     elif data[2] == "setevent":
         await query.answer()
@@ -1440,6 +1470,7 @@ async def edit_user_settings(client, query):
         "teldrive",
         "ffset",
         "advanced",
+        "referral",
         "gdrive",
         "rclone",
     ]:

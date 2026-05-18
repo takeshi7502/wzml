@@ -141,7 +141,7 @@ def _usage_text(user_id, quota, exceeded=False, user=None):
         us_cmd = f"/us{Config.CMD_SUFFIX}"
         return (
             "┠ <b><i>You've used up all your free mirror uses for today!</i></b>\n"
-            f"┖ <b>Check info</b> → <code>{us_cmd}</code>"
+            f"┖ <b>Tip</b> → Use <code>{us_cmd}</code> → <b>Invite Friends</b> to invite people to Mirror Chat and earn more mirror uses."
         )
     return (
         "⌬ <b>User Quota :</b>\n"

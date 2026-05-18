@@ -571,7 +571,12 @@ async def edit_quota_vip_value(_, message, pre_message, prompt_message, user_id,
         return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
 
     if action == "viplimit":
-        await quota_set_vip_limit(user_id, value)
+        success, result = await quota_set_vip_limit(user_id, value)
+        if not success:
+            await auto_delete_message(await send_message(message, result))
+            await delete_message(message)
+            await delete_message(prompt_message)
+            return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
     else:
         await quota_set_vip_days(user_id, value)
     await delete_message(message)

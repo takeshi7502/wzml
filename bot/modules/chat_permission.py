@@ -34,6 +34,8 @@ async def authorize(_, message):
             msg = "Authorized"
     else:
         update_user_ldata(chat_id, "AUTH", True)
+        if user_data.get(chat_id, {}).get("VIP_AUTH_REVOKED"):
+            update_user_ldata(chat_id, "VIP_AUTH_REVOKED", False)
         if thread_id is not None:
             update_user_ldata(chat_id, "thread_ids", [thread_id])
         await database.update_user_data(chat_id)
@@ -63,6 +65,8 @@ async def unauthorize(_, message):
             user_data[chat_id]["thread_ids"].remove(thread_id)
         else:
             update_user_ldata(chat_id, "AUTH", False)
+            if user_data.get(chat_id, {}).get("VIP_ENABLED"):
+                update_user_ldata(chat_id, "VIP_AUTH_REVOKED", True)
         await database.update_user_data(chat_id)
         msg = "Unauthorized"
     else:

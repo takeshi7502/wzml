@@ -1,3 +1,5 @@
+from time import time
+
 from pyrogram.filters import create
 from pyrogram.enums import ChatType
 
@@ -13,6 +15,17 @@ class CustomFilters:
 
     owner = create(owner_filter)
 
+    @staticmethod
+    def _vip_authorized(uid):
+        data = user_data.get(uid, {})
+        expire_at = int(data.get("VIP_EXPIRE_AT") or 0)
+        return bool(
+            data.get("VIP_ENABLED")
+            and int(data.get("VIP_DAILY_LIMIT") or 0) > 0
+            and not data.get("VIP_AUTH_REVOKED", False)
+            and (expire_at == 0 or expire_at > int(time()))
+        )
+
     async def authorized_user(self, _, update):
         uid = (update.from_user or update.sender_chat).id
         chat_id = update.chat.id
@@ -24,6 +37,7 @@ class CustomFilters:
                 and (
                     user_data[uid].get("AUTH", False)
                     or user_data[uid].get("SUDO", False)
+                    or CustomFilters._vip_authorized(uid)
                 )
             )
             or (

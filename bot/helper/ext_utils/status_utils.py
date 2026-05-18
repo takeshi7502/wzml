@@ -142,13 +142,16 @@ def get_readable_file_size(size_in_bytes):
 
 
 def get_readable_time(seconds: int):
-    periods = [("d", 86400), ("h", 3600), ("m", 60), ("s", 1)]
+    seconds = max(0, int(seconds or 0))
+    if 0 < seconds < 60:
+        seconds = 60
+    periods = [("d", 86400), ("h", 3600), ("m", 60)]
     result = ""
     for period_name, period_seconds in periods:
         if seconds >= period_seconds:
             period_value, seconds = divmod(seconds, period_seconds)
             result += f"{int(period_value)}{period_name}"
-    return result
+    return result or "0m"
 
 
 def get_raw_time(time_str: str) -> int:

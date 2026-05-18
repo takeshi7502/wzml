@@ -403,9 +403,6 @@ async def get_user_settings(from_user, stype="main"):
             vip_text = "┖ <b>VIP Status</b> → Unlimited"
         elif vip.get("active"):
             vip_text = f"┠ <b>VIP Status</b> → Active\r\n┖ <b>VIP Expires</b> → {vip.get('expires', 'N/A')}"
-        elif vip.get("limit", 0) > 0 or vip.get("expire_at") is not None:
-            pending_expire = "Not set" if vip.get("expire_at") is None else vip.get("expires", "N/A")
-            vip_text = f"┠ <b>VIP Status</b> → Inactive (Limit: {vip.get('limit', 0)}/day)\r\n┖ <b>VIP Expires</b> → {pending_expire}"
         else:
             vip_text = "┠ <b>VIP Status</b> → Inactive\r\n┖ <b><i>Need more quota? Contact admin for a VIP upgrade.</i></b>"
         text = f"""⌬ <b>User Settings :</b>

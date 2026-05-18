@@ -161,7 +161,8 @@ def _user_label(user_id, user=None):
         name = getattr(user, "first_name", None) or getattr(user, "title", None) or getattr(user, "username", None)
     else:
         name = user_data.get(user_id, {}).get("NAME")
-    return f"{name or user_id} (#ID{user_id})"
+    name = name or user_id
+    return f"<a href='tg://user?id={user_id}'>{name}</a> (#ID{user_id})"
 
 
 def quota_summary(user_id):
@@ -185,16 +186,17 @@ def _usage_text(user_id, quota, exceeded=False, user=None):
     summary = quota_summary(user_id)
     if exceeded:
         us_cmd = f"/us{Config.CMD_SUFFIX}"
+        admin_link = f"tg://user?id={Config.OWNER_ID}"
         return (
-            "┠ <b><i>You've used up all your free mirror uses for today!</i></b>\n"
-            f"┖ <b>Tip</b> → Use <code>{us_cmd}</code> → <b>Invite Friends</b> to invite people to Mirror Chat and earn more mirror uses."
+            "┠ <b><i>You've used up all your free mirror uses for today! ⚠️</i></b>\n"
+            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b>Invite Friends</b> to more mirror uses free.\n"
+            f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
         )
     vip = summary["vip"]
     if vip["active"]:
         vip_text = f"┠ <b>VIP Status</b> → Active\n┖ <b>VIP Expires</b> → {vip['expires']}"
-    elif vip.get("limit", 0) > 0 or vip.get("expire_at") is not None:
-        pending_expire = "Not set" if vip.get("expire_at") is None else vip["expires"]
-        vip_text = f"┠ <b>VIP Status</b> → Inactive (Limit: {vip.get('limit', 0)}/day)\n┖ <b>VIP Expires</b> → {pending_expire}"
+    elif vip.get("enabled"):
+        vip_text = "┖ <b>VIP Status</b> → Inactive"
     else:
         vip_text = "┠ <b>VIP Status</b> → Inactive\n┖ <b><i>Need more quota? Contact admin for a VIP upgrade.</i></b>"
     return (
@@ -310,13 +312,17 @@ async def quota_clear_pending(user_id):
 
 
 async def quota_set_vip_limit(user_id, limit):
+    limit = int(limit)
+    base_limit = _base_limit()
+    if limit <= base_limit:
+        return False, f"VIP daily limit must be greater than current Daily Free ({base_limit}/day)."
     async with _locks[user_id]:
         data = user_data.setdefault(user_id, {})
-        data["VIP_DAILY_LIMIT"] = max(0, int(limit))
+        data["VIP_DAILY_LIMIT"] = limit
         if not data.get("VIP_START_AT"):
             data["VIP_START_AT"] = int(_now().timestamp())
         await save_user_quota(user_id)
-        return _usage_text(user_id, _quota_doc(user_id))
+        return True, _usage_text(user_id, _quota_doc(user_id))
 
 
 async def quota_set_vip_days(user_id, days):

@@ -47,6 +47,11 @@ from ..helper.ext_utils.user_quota_manager import (
     quota_clear_pending,
     quota_get_usage,
     quota_reset_today,
+    quota_set_vip_days,
+    quota_set_vip_limit,
+    quota_enable_vip,
+    quota_disable_vip,
+    quota_summary,
 )
 from ..helper.ext_utils.referral_manager import referral_settings_text, referral_usage_text
 from ..core.jdownloader_booter import jdownloader
@@ -59,6 +64,7 @@ from ..helper.telegram_helper.message_utils import (
     send_file,
     send_message,
     update_status_message,
+    auto_delete_message,
 )
 from .rss import add_job
 from .search import initiate_search_tools
@@ -521,11 +527,16 @@ async def show_quota_user_menu(message, user_id, user=None, owner_id=0):
     buttons = ButtonMaker()
     reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
     owner_id = owner_id or getattr(reply_user, "id", 0) or user_id
+    vip = quota_summary(user_id).get("vip", {})
+    vip_toggle = "Disable VIP" if vip.get("active") else "Enable VIP"
     buttons.data_button("Reset Quota", f"botset quotauser reset {user_id} {owner_id}")
+    buttons.data_button("Set VIP Limit", f"botset quotauser viplimit {user_id} {owner_id}")
     buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id} {owner_id}")
+    buttons.data_button("Set VIP Days", f"botset quotauser vipdays {user_id} {owner_id}")
     buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id} {owner_id}")
-    buttons.data_button("Back", "botset quota")
-    buttons.data_button("Close", "botset close")
+    buttons.data_button(vip_toggle, f"botset quotauser viptoggle {user_id} {owner_id}")
+    buttons.data_button("Back", "botset quota", position="footer")
+    buttons.data_button("Close", "botset close", position="footer")
     await edit_message(message, text, buttons.build_menu(2))
 
 
@@ -542,6 +553,27 @@ async def edit_quota_extra_amount(_, message, pre_message, prompt_message, user_
     if action == "remove":
         amount = -amount
     await quota_add_extra(user_id, amount)
+    await delete_message(message)
+    await delete_message(prompt_message)
+    await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
+
+
+@new_task
+async def edit_quota_vip_value(_, message, pre_message, prompt_message, user_id, action, user=None):
+    handler_dict[message.chat.id] = False
+    try:
+        value = int(message.text.split()[0])
+        if value < 0:
+            raise ValueError
+    except Exception:
+        await delete_message(message)
+        await delete_message(prompt_message)
+        return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
+
+    if action == "viplimit":
+        await quota_set_vip_limit(user_id, value)
+    else:
+        await quota_set_vip_days(user_id, value)
     await delete_message(message)
     await delete_message(prompt_message)
     await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
@@ -1134,6 +1166,35 @@ async def edit_bot_settings(client, query):
             )
             rfunc = partial(delete_message, prompt)
             await event_handler(client, query, pfunc, rfunc)
+        elif action in {"viplimit", "vipdays"}:
+            prompt_text = (
+                "Send VIP daily limit for this user. Example: <code>30</code>. Timeout: 60 sec"
+                if action == "viplimit"
+                else "Send VIP duration in days. Example: <code>30</code>. Use <code>0</code> for forever. Timeout: 60 sec"
+            )
+            prompt = await send_message(message, prompt_text)
+            pfunc = partial(
+                edit_quota_vip_value,
+                pre_message=message,
+                prompt_message=prompt,
+                user_id=user_id,
+                action=action,
+                user=user,
+            )
+            rfunc = partial(delete_message, prompt)
+            await event_handler(client, query, pfunc, rfunc)
+        elif action == "viptoggle":
+            vip = quota_summary(user_id).get("vip", {})
+            if vip.get("active"):
+                await quota_disable_vip(user_id)
+                await show_quota_user_menu(message, user_id, user, owner_id)
+                return
+            ok, result = await quota_enable_vip(user_id)
+            if not ok:
+                notice = await send_message(message, result)
+                await auto_delete_message(notice, stime=10)
+                return
+            await show_quota_user_menu(message, user_id, user, owner_id)
     elif data[1] == "start":
         await query.answer()
         if start != int(data[3]):

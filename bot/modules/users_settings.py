@@ -398,6 +398,16 @@ async def get_user_settings(from_user, stype="main"):
             extra_quota = quota["extra_quota"]
             pending_tasks = quota["pending"]
             reset_after = quota["reset_after"]
+        vip = quota.get("vip", {})
+        if user_id == Config.OWNER_ID or user_id in sudo_users:
+            vip_text = "┖ <b>VIP Status</b> → Unlimited"
+        elif vip.get("active"):
+            vip_text = f"┠ <b>VIP Status</b> → Active\r\n┖ <b>VIP Expires</b> → {vip.get('expires', 'N/A')}"
+        elif vip.get("limit", 0) > 0 or vip.get("expire_at") is not None:
+            pending_expire = "Not set" if vip.get("expire_at") is None else vip.get("expires", "N/A")
+            vip_text = f"┠ <b>VIP Status</b> → Inactive (Limit: {vip.get('limit', 0)}/day)\r\n┖ <b>VIP Expires</b> → {pending_expire}"
+        else:
+            vip_text = "┠ <b>VIP Status</b> → Inactive\r\n┖ <b><i>Need more quota? Contact admin for a VIP upgrade.</i></b>"
         text = f"""⌬ <b>User Settings :</b>
 ┃
 ┟ <b>Name</b> → {user_display}
@@ -405,9 +415,8 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Extra Quota</b> → {extra_quota}
 ┠ <b>Pending Tasks</b> → {pending_tasks}
 ┠ <b>Reset After</b> → {reset_after}
-┠ <b>Telegram DC</b> → {from_user.dc_id}
-┠ <b>Telegram Lang</b> → {Language.get(lc).display_name() if (lc := from_user.language_code) else "N/A"}
-┖ <b><i>You can use this command in DM!</i></b>"""
+{vip_text}
+<b><i>You can use this command in DM!</i></b>"""
 
         btns = buttons.build_menu(2)
 

@@ -71,11 +71,55 @@ def _quota_doc(user_id):
     return quota
 
 
-def _limit():
+def _base_limit():
     try:
         return max(0, int(Config.USER_QUOTA_DAILY_LIMIT))
     except Exception:
         return 20
+
+
+def _format_date(ts):
+    if not ts:
+        return "N/A"
+    return datetime.fromtimestamp(int(ts), tz=ZoneInfo(Config.TIMEZONE)).strftime("%d/%m/%Y")
+
+
+def _vip_state(user_id):
+    data = user_data.setdefault(user_id, {})
+    now_ts = int(_now().timestamp())
+    enabled = bool(data.get("VIP_ENABLED"))
+    limit = int(data.get("VIP_DAILY_LIMIT") or 0)
+    start_at = int(data.get("VIP_START_AT") or 0)
+    expire_at = int(data.get("VIP_EXPIRE_AT") or 0)
+    expired = enabled and expire_at > 0 and expire_at <= now_ts
+    if expired:
+        data["VIP_ENABLED"] = False
+        enabled = False
+    active = enabled and limit > 0 and (expire_at == 0 or expire_at > now_ts)
+    if active:
+        if expire_at == 0:
+            expires = f"Forever (Start: {_format_date(start_at)})"
+        else:
+            expires = f"{get_readable_time(expire_at - now_ts)} (Start: {_format_date(start_at)})"
+    else:
+        expires = "N/A"
+    return {
+        "enabled": enabled,
+        "active": active,
+        "expired": expired,
+        "limit": limit,
+        "start_at": start_at,
+        "expire_at": expire_at,
+        "expires": expires,
+    }
+
+
+def _limit(user_id=None):
+    if user_id is not None:
+        vip = _vip_state(user_id)
+        if vip["active"]:
+            return vip["limit"]
+    return _base_limit()
 
 
 def _timeout():
@@ -102,12 +146,12 @@ def _clear_stale_pending(quota):
     }
 
 
-def _remaining(quota):
-    return _limit() + int(quota.get("extra_quota", 0)) - int(quota.get("used_today", 0)) - len(quota.get("pending", {}))
+def _remaining(quota, user_id=None):
+    return _limit(user_id) + int(quota.get("extra_quota", 0)) - int(quota.get("used_today", 0)) - len(quota.get("pending", {}))
 
 
-def _used_free(quota):
-    return min(int(quota.get("used_today", 0)), _limit())
+def _used_free(quota, user_id=None):
+    return min(int(quota.get("used_today", 0)), _limit(user_id))
 
 
 def _user_label(user_id, user=None):
@@ -124,14 +168,16 @@ def quota_summary(user_id):
     quota = _quota_doc(user_id)
     _reset_if_needed(quota)
     _clear_stale_pending(quota)
-    limit = _limit()
+    limit = _limit(user_id)
+    vip = _vip_state(user_id)
     return {
-        "daily_used": _used_free(quota),
+        "daily_used": _used_free(quota, user_id),
         "daily_limit": limit,
         "pending": len(quota.get("pending", {})),
         "extra_quota": int(quota.get("extra_quota", 0)),
-        "remaining": max(0, _remaining(quota)),
+        "remaining": max(0, _remaining(quota, user_id)),
         "reset_after": get_readable_time(_next_reset_after()),
+        "vip": vip,
     }
 
 
@@ -143,6 +189,14 @@ def _usage_text(user_id, quota, exceeded=False, user=None):
             "┠ <b><i>You've used up all your free mirror uses for today!</i></b>\n"
             f"┖ <b>Tip</b> → Use <code>{us_cmd}</code> → <b>Invite Friends</b> to invite people to Mirror Chat and earn more mirror uses."
         )
+    vip = summary["vip"]
+    if vip["active"]:
+        vip_text = f"┠ <b>VIP Status</b> → Active\n┖ <b>VIP Expires</b> → {vip['expires']}"
+    elif vip.get("limit", 0) > 0 or vip.get("expire_at") is not None:
+        pending_expire = "Not set" if vip.get("expire_at") is None else vip["expires"]
+        vip_text = f"┠ <b>VIP Status</b> → Inactive (Limit: {vip.get('limit', 0)}/day)\n┖ <b>VIP Expires</b> → {pending_expire}"
+    else:
+        vip_text = "┠ <b>VIP Status</b> → Inactive\n┖ <b><i>Need more quota? Contact admin for a VIP upgrade.</i></b>"
     return (
         "⌬ <b>User Quota :</b>\n"
         "│\n"
@@ -150,7 +204,8 @@ def _usage_text(user_id, quota, exceeded=False, user=None):
         f"┠ <b>Daily Free</b> → {summary['daily_limit'] - summary['daily_used']} / {summary['daily_limit']}\n"
         f"┠ <b>Pending Tasks</b> → {summary['pending']}\n"
         f"┠ <b>Extra Quota</b> → {summary['extra_quota']}\n"
-        f"┖ <b>Reset After</b> → {summary['reset_after']}"
+        f"┠ <b>Reset After</b> → {summary['reset_after']}\n"
+        f"{vip_text}"
     )
 
 
@@ -173,7 +228,7 @@ async def quota_precheck(message, task_type="task", task_name=None):
         _reset_if_needed(quota)
         _clear_stale_pending(quota)
         key = _task_key(message)
-        if key not in quota["pending"] and _remaining(quota) <= 0:
+        if key not in quota["pending"] and _remaining(quota, user_id) <= 0:
             return _usage_text(user_id, quota, exceeded=True, user=user)
         quota["pending"][key] = {
             "task_type": task_type,
@@ -197,7 +252,7 @@ async def quota_confirm_task(listener):
         if key not in quota.get("pending", {}):
             return
         quota["pending"].pop(key, None)
-        if int(quota.get("used_today", 0)) < _limit():
+        if int(quota.get("used_today", 0)) < _limit(user_id):
             quota["used_today"] = int(quota.get("used_today", 0)) + 1
         else:
             quota["extra_quota"] = max(0, int(quota.get("extra_quota", 0)) - 1)
@@ -252,3 +307,46 @@ async def quota_clear_pending(user_id):
         quota["pending"] = {}
         await save_user_quota(user_id)
         return _usage_text(user_id, quota)
+
+
+async def quota_set_vip_limit(user_id, limit):
+    async with _locks[user_id]:
+        data = user_data.setdefault(user_id, {})
+        data["VIP_DAILY_LIMIT"] = max(0, int(limit))
+        if not data.get("VIP_START_AT"):
+            data["VIP_START_AT"] = int(_now().timestamp())
+        await save_user_quota(user_id)
+        return _usage_text(user_id, _quota_doc(user_id))
+
+
+async def quota_set_vip_days(user_id, days):
+    async with _locks[user_id]:
+        data = user_data.setdefault(user_id, {})
+        days = int(days)
+        now_ts = int(_now().timestamp())
+        if not data.get("VIP_START_AT"):
+            data["VIP_START_AT"] = now_ts
+        data["VIP_EXPIRE_AT"] = 0 if days == 0 else now_ts + days * 86400
+        await save_user_quota(user_id)
+        return _usage_text(user_id, _quota_doc(user_id))
+
+
+async def quota_enable_vip(user_id):
+    async with _locks[user_id]:
+        data = user_data.setdefault(user_id, {})
+        limit = int(data.get("VIP_DAILY_LIMIT") or 0)
+        expire_at = data.get("VIP_EXPIRE_AT")
+        if limit <= 0 or expire_at is None:
+            return False, "VIP limit and VIP days must be set before enabling VIP."
+        if not data.get("VIP_START_AT"):
+            data["VIP_START_AT"] = int(_now().timestamp())
+        data["VIP_ENABLED"] = True
+        await save_user_quota(user_id)
+        return True, _usage_text(user_id, _quota_doc(user_id))
+
+
+async def quota_disable_vip(user_id):
+    async with _locks[user_id]:
+        user_data.setdefault(user_id, {})["VIP_ENABLED"] = False
+        await save_user_quota(user_id)
+        return _usage_text(user_id, _quota_doc(user_id))

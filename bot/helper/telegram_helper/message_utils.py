@@ -230,6 +230,11 @@ def reset_auto_delete_message(key, *args, stime=90):
     _resettable_auto_delete_tasks[key] = create_task(_delete_later())
 
 
+def cancel_resettable_auto_delete_message(key):
+    if task := _resettable_auto_delete_tasks.pop(key, None):
+        task.cancel()
+
+
 async def delete_status():
     async with task_dict_lock:
         for key, data in list(status_dict.items()):

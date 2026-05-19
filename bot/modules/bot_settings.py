@@ -548,6 +548,17 @@ async def cancel_quota_prompt(chat_id):
         await delete_message(prompt)
 
 
+async def restore_quota_menu_timer(pre_message, prompt_message, stime=60):
+    if prompt_message:
+        quota_prompt_dict.pop(prompt_message.chat.id, None)
+
+
+async def edit_quota_prompt_error(prompt_message, error, prompt_text):
+    buttons = ButtonMaker()
+    buttons.data_button("Cancel", "botset quotapromptcancel")
+    await edit_message(prompt_message, f"⚠️ <b>{error}</b>\n\n{prompt_text}", buttons.build_menu(1))
+
+
 async def send_quota_value_prompt(message, text):
     await cancel_quota_prompt(message.chat.id)
     buttons = ButtonMaker()
@@ -560,18 +571,23 @@ async def send_quota_value_prompt(message, text):
 
 @new_task
 async def edit_quota_extra_amount(_, message, pre_message, prompt_message, user_id, action, user=None):
-    handler_dict[message.chat.id] = False
     try:
         amount = int(message.text.split()[0])
     except Exception:
         await delete_message(message)
-        await delete_message(prompt_message)
-        return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
+        await edit_quota_prompt_error(
+            prompt_message,
+            "Invalid amount. Please send a number.",
+            f"Send amount to {'add to' if action == 'add' else 'remove from'} extra quota for <code>{user_id}</code>. Timeout: 60 sec",
+        )
+        return
+
+    handler_dict[message.chat.id] = False
 
     if action == "remove":
         amount = -amount
     await quota_add_extra(user_id, amount)
-    quota_prompt_dict.pop(prompt_message.chat.id, None)
+    await restore_quota_menu_timer(pre_message, prompt_message)
     await delete_message(message)
     await delete_message(prompt_message)
     await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
@@ -579,26 +595,34 @@ async def edit_quota_extra_amount(_, message, pre_message, prompt_message, user_
 
 @new_task
 async def edit_quota_vip_value(_, message, pre_message, prompt_message, user_id, action, user=None):
-    handler_dict[message.chat.id] = False
     try:
         value = int(message.text.split()[0])
         if value < 0:
             raise ValueError
     except Exception:
         await delete_message(message)
-        await delete_message(prompt_message)
-        return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
+        prompt_text = (
+            "Send VIP daily limit for this user. Example: <code>30</code>. Timeout: 60 sec"
+            if action == "viplimit"
+            else "Send VIP duration in days. Example: <code>30</code>. Use <code>0</code> for forever. Timeout: 60 sec"
+        )
+        await edit_quota_prompt_error(prompt_message, "Invalid value. Please send a non-negative number.", prompt_text)
+        return
 
     if action == "viplimit":
         success, result = await quota_set_vip_limit(user_id, value)
         if not success:
-            await auto_delete_message(await send_message(message, result))
             await delete_message(message)
-            await delete_message(prompt_message)
-            return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
+            await edit_quota_prompt_error(
+                prompt_message,
+                result,
+                "Send VIP daily limit for this user. Example: <code>30</code>. Timeout: 60 sec",
+            )
+            return
     else:
         await quota_set_vip_days(user_id, value)
-    quota_prompt_dict.pop(prompt_message.chat.id, None)
+    handler_dict[message.chat.id] = False
+    await restore_quota_menu_timer(pre_message, prompt_message)
     await delete_message(message)
     await delete_message(prompt_message)
     await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
@@ -1176,9 +1200,9 @@ async def edit_bot_settings(client, query):
         owner_id = int(data[4]) if len(data) > 4 else query.from_user.id
         if query.from_user.id != owner_id:
             return await query.answer("Not Yours!", show_alert=True)
-        reset_auto_delete_message(f"quota_menu:{message.chat.id}:{message.id}", message, getattr(message, "reply_to_message", None), stime=60)
         user = await get_quota_user(client, user_id)
         if action == "reset":
+            await cancel_quota_prompt(message.chat.id)
             await quota_reset_today(user_id)
             await show_quota_user_menu(message, user_id, user, owner_id)
         elif action in {"add", "remove"}:
@@ -1194,7 +1218,7 @@ async def edit_bot_settings(client, query):
                 action=action,
                 user=user,
             )
-            rfunc = partial(delete_message, prompt)
+            rfunc = partial(restore_quota_menu_timer, message, prompt, 60)
             await event_handler(client, query, pfunc, rfunc)
         elif action in {"viplimit", "vipdays"}:
             prompt_text = (
@@ -1211,9 +1235,10 @@ async def edit_bot_settings(client, query):
                 action=action,
                 user=user,
             )
-            rfunc = partial(delete_message, prompt)
+            rfunc = partial(restore_quota_menu_timer, message, prompt, 60)
             await event_handler(client, query, pfunc, rfunc)
         elif action == "viptoggle":
+            await cancel_quota_prompt(message.chat.id)
             vip = quota_summary(user_id).get("vip", {})
             if vip.get("active"):
                 await quota_disable_vip(user_id)

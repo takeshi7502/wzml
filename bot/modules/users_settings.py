@@ -1146,8 +1146,6 @@ async def send_user_settings(client, message):
         buttons.data_button(vip_toggle, f"botset quotauser viptoggle {user_id} {from_user.id}")
         buttons.data_button("Close", "botset close", "footer")
         quota_menu = await send_message(message, text, buttons.build_menu(2))
-        if not isinstance(quota_menu, str):
-            reset_auto_delete_message(f"quota_menu:{quota_menu.chat.id}:{quota_menu.id}", quota_menu, message, stime=60)
         return
     msg, button = await get_user_settings(from_user)
     user_menu = await send_message(message, msg, button)

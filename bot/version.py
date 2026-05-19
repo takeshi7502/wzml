@@ -6,8 +6,8 @@ def get_version() -> str:
     :rtype: str
     """
     MAJOR = "3"
-    MINOR = "2"
-    PATCH = "10"
+    MINOR = "3"
+    PATCH = "0"
     STATE = "x"
     return f"v{MAJOR}.{MINOR}.{PATCH}-{STATE}"
 

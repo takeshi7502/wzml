@@ -57,6 +57,15 @@ def referral_stats(user_id):
     return total
 
 
+def referral_pending_stats(user_id):
+    total = 0
+    for data in user_data.values():
+        ref = data.get(REFERRAL_KEY, {})
+        if ref.get("inviter_id") == user_id and ref.get("status") == "pending_join":
+            total += 1
+    return total
+
+
 def referral_usage_rows(page=0, page_size=5):
     rows = []
     for invitee_id, data in user_data.items():

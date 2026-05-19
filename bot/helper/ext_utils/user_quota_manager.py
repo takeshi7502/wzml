@@ -182,14 +182,19 @@ def quota_summary(user_id):
     }
 
 
-def _usage_text(user_id, quota, exceeded=False, user=None):
+def _upgrade_text():
+    admin_link = f"tg://user?id={Config.OWNER_ID}"
+    return f"<b><i>Need more quota? Contact <a href=\"{admin_link}\"><b><u>ADMIN</u></b></a> for a VIP upgrade.</i></b>"
+
+
+def _usage_text(user_id, quota, exceeded=False, user=None, show_upgrade=True):
     summary = quota_summary(user_id)
     if exceeded:
         us_cmd = f"/us{Config.CMD_SUFFIX}"
         admin_link = f"tg://user?id={Config.OWNER_ID}"
         return (
             "┠ <b><i>You've used up all your free mirror uses for today! ⚠️</i></b>\n"
-            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b>Invite Friends</b> to more mirror uses free.\n"
+            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b><u>Invite Friends</u></b> to more mirror uses free.\n"
             f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
         )
     vip = summary["vip"]
@@ -197,8 +202,10 @@ def _usage_text(user_id, quota, exceeded=False, user=None):
         vip_text = f"┠ <b>VIP Status</b> → Active\n┖ <b>VIP Expires</b> → {vip['expires']}"
     elif vip.get("enabled"):
         vip_text = "┖ <b>VIP Status</b> → Inactive"
+    elif show_upgrade:
+        vip_text = f"┠ <b>VIP Status</b> → Inactive\n┖ {_upgrade_text()}"
     else:
-        vip_text = "┠ <b>VIP Status</b> → Inactive\n┖ <b><i>Need more quota? Contact admin for a VIP upgrade.</i></b>"
+        vip_text = "┖ <b>VIP Status</b> → Inactive"
     return (
         "⌬ <b>User Quota :</b>\n"
         "│\n"
@@ -276,13 +283,13 @@ async def quota_release_task(listener, reason=""):
             LOGGER.info("User quota release: user=%s task=%s reason=%s", user_id, key, reason)
 
 
-async def quota_get_usage(user_id, user=None):
+async def quota_get_usage(user_id, user=None, show_upgrade=True):
     async with _locks[user_id]:
         quota = _quota_doc(user_id)
         _reset_if_needed(quota)
         _clear_stale_pending(quota)
         await save_user_quota(user_id)
-        return _usage_text(user_id, quota, user=user)
+        return _usage_text(user_id, quota, user=user, show_upgrade=show_upgrade)
 
 
 async def quota_add_extra(user_id, amount):

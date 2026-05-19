@@ -29,6 +29,7 @@ from ..helper.telegram_helper.filters import CustomFilters
 from ..helper.ext_utils.referral_manager import (
     referral_enabled,
     referral_invite_link,
+    referral_pending_stats,
     referral_share_link,
     referral_stats,
 )
@@ -37,6 +38,7 @@ from ..helper.telegram_helper.message_utils import (
     auto_delete_message,
     delete_message,
     edit_message,
+    reset_auto_delete_message,
     send_file,
     send_message,
 )
@@ -386,7 +388,7 @@ async def get_user_settings(from_user, stype="main"):
                 "Reset All", f"userset {user_id} confirm_reset_all", position="footer"
             )
         if referral_enabled() and user_id != Config.OWNER_ID and user_id not in sudo_users:
-            buttons.data_button("Invite Friends", f"userset {user_id} referral", position="footer")
+            buttons.data_button("🎁 Invite Friends", f"userset {user_id} referral", position="footer")
         buttons.data_button("Close", f"userset {user_id} close", position="footer")
 
         quota = quota_summary(user_id)
@@ -404,7 +406,11 @@ async def get_user_settings(from_user, stype="main"):
         elif vip.get("active"):
             vip_text = f"┠ <b>VIP Status</b> → Active\r\n┖ <b>VIP Expires</b> → {vip.get('expires', 'N/A')}"
         else:
-            vip_text = "┠ <b>VIP Status</b> → Inactive\r\n┖ <b><i>Need more quota? Contact admin for a VIP upgrade.</i></b>"
+            admin_link = f"tg://user?id={Config.OWNER_ID}"
+            vip_text = (
+                "┠ <b>Need more quota free? Click <u>Invite Friends</u> below!</b>\r\n"
+                f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
+            )
         text = f"""⌬ <b>User Settings :</b>
 ┃
 ┟ <b>Name</b> → {user_display}
@@ -413,7 +419,7 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Pending Tasks</b> → {pending_tasks}
 ┠ <b>Reset After</b> → {reset_after}
 {vip_text}
-<b><i>You can use this command in DM!</i></b>"""
+=> <b><i>You can use this command in DM!</i></b>"""
 
         btns = buttons.build_menu(2)
 
@@ -421,6 +427,7 @@ async def get_user_settings(from_user, stype="main"):
         invite_link = referral_invite_link(user_id)
         share_link = referral_share_link(user_id)
         success = referral_stats(user_id)
+        pending_join = referral_pending_stats(user_id)
         buttons.url_button("Share Link", share_link or invite_link or "https://t.me")
         buttons.data_button("Back", f"userset {user_id} back", "footer")
         buttons.data_button("Close", f"userset {user_id} close", "footer")
@@ -430,7 +437,8 @@ async def get_user_settings(from_user, stype="main"):
 ┟ <b>Invite Link</b> → <code>{invite_link or 'Unavailable'}</code>
 ┠ <b>Reward</b> → +{Config.REFERRAL_REWARD_QUOTA} Extra Quota / verified user
 ┠ <b>Requirement</b> → Friend must join Mirror Chat
-┖ <b>Your Referrals</b> → {success} successful"""
+┠ <b>Your Referrals</b> → {success} successful
+┖ <b>Referrals Pending Join</b> → {pending_join}"""
 
     elif stype == "general":
         if user_dict.get("DEFAULT_UPLOAD", ""):
@@ -1126,15 +1134,20 @@ async def send_user_settings(client, message):
             user = await client.get_users(user_id)
         except Exception:
             user = target_user
-        text = await quota_get_usage(user_id, user=user)
+        text = await quota_get_usage(user_id, user=user, show_upgrade=False)
         buttons = ButtonMaker()
+        vip = quota_summary(user_id).get("vip", {})
+        vip_toggle = "Disable VIP" if vip.get("active") else "Enable VIP"
         buttons.data_button("Reset Quota", f"botset quotauser reset {user_id} {from_user.id}")
+        buttons.data_button("Set VIP Daily", f"botset quotauser viplimit {user_id} {from_user.id}")
         buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id} {from_user.id}")
+        buttons.data_button("Set VIP Days", f"botset quotauser vipdays {user_id} {from_user.id}")
         buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id} {from_user.id}")
-        buttons.data_button("Close", "botset close")
+        buttons.data_button(vip_toggle, f"botset quotauser viptoggle {user_id} {from_user.id}")
+        buttons.data_button("Close", "botset close", "footer")
         quota_menu = await send_message(message, text, buttons.build_menu(2))
         if not isinstance(quota_menu, str):
-            await auto_delete_message(quota_menu, message, stime=30)
+            reset_auto_delete_message(f"quota_menu:{quota_menu.chat.id}:{quota_menu.id}", quota_menu, message, stime=60)
         return
     msg, button = await get_user_settings(from_user)
     user_menu = await send_message(message, msg, button)

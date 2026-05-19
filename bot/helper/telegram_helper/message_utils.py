@@ -1,4 +1,4 @@
-from asyncio import sleep, gather
+from asyncio import sleep, gather, create_task
 from re import match as re_match
 from time import time
 
@@ -211,6 +211,23 @@ async def delete_links(message):
 async def auto_delete_message(*args, stime=90):
     await sleep(stime)
     await delete_message(*args)
+
+
+_resettable_auto_delete_tasks = {}
+
+
+def reset_auto_delete_message(key, *args, stime=90):
+    if task := _resettable_auto_delete_tasks.pop(key, None):
+        task.cancel()
+
+    async def _delete_later():
+        try:
+            await sleep(stime)
+            await delete_message(*args)
+        finally:
+            _resettable_auto_delete_tasks.pop(key, None)
+
+    _resettable_auto_delete_tasks[key] = create_task(_delete_later())
 
 
 async def delete_status():

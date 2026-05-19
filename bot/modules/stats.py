@@ -119,7 +119,7 @@ async def get_stats(event, key="home"):
     elif key == "strepo":
         last_commit, changelog = "No Data", "N/A"
         if await aiopath.exists(".git"):
-            real_commit_filter = "--perl-regexp --grep='\\[skip changelog\\]' --grep='^chore: bump version' --grep='^update$' --grep='^botsettings$' --invert-grep"
+            real_commit_filter = "--no-merges --perl-regexp --grep='\\[skip changelog\\]' --grep='^chore: bump version' --grep='^update$' --grep='^botsettings$' --invert-grep"
             last_commit = (
                 await cmd_exec(
                     f"git log -1 {real_commit_filter} --pretty='%cd ( %cr )' --date=format-local:'%d/%m/%Y'",
@@ -329,7 +329,7 @@ async def get_packages_version():
         bot_cache["eng_versions"][tool] = ver
     if await aiopath.exists(".git"):
         last_commit = await cmd_exec(
-            "git log -1 --perl-regexp --grep='\\[skip changelog\\]' --grep='^chore: bump version' --grep='^update$' --grep='^botsettings$' --invert-grep --date=short --pretty=format:'%cd <b>From</b> %cr'",
+            "git log -1 --no-merges --perl-regexp --grep='\\[skip changelog\\]' --grep='^chore: bump version' --grep='^update$' --grep='^botsettings$' --invert-grep --date=short --pretty=format:'%cd <b>From</b> %cr'",
             True,
         )
         last_commit = last_commit[0]

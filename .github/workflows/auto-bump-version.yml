@@ -44,9 +44,21 @@ jobs:
               raise SystemExit("Could not find MAJOR/MINOR/PATCH in bot/version.py")
 
           current = f"{major.group(1)}.{minor.group(1)}.{patch.group(1)}"
-          next_patch = int(patch.group(1)) + 1
-          next_version = f"{major.group(1)}.{minor.group(1)}.{next_patch}"
+          current_major = int(major.group(1))
+          current_minor = int(minor.group(1))
+          current_patch = int(patch.group(1))
 
+          next_major = current_major
+          next_minor = current_minor
+          next_patch = current_patch + 1
+          if next_patch > 9:
+              next_patch = 0
+              next_minor += 1
+
+          next_version = f"{next_major}.{next_minor}.{next_patch}"
+
+          text = re.sub(r'MAJOR\s*=\s*"\d+"', f'MAJOR = "{next_major}"', text, count=1)
+          text = re.sub(r'MINOR\s*=\s*"\d+"', f'MINOR = "{next_minor}"', text, count=1)
           text = re.sub(r'PATCH\s*=\s*"\d+"', f'PATCH = "{next_patch}"', text, count=1)
           version_file.write_text(text, encoding="utf-8")
 

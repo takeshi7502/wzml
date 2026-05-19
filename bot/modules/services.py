@@ -58,7 +58,7 @@ async def start(_, message):
 ┃
 ┠ <b>Status</b> → {escape(note)}
 ┠ <b>Requirement</b> → Join Mirror Chat
-┖ <b>Reward</b> → inviter gets +{Config.REFERRAL_REWARD_QUOTA} Extra Quota"""
+┖ <b>Guide</b> → Click <b>Join Mirror Chat</b> below, then come back here and click <b>I Joined</b> to verify."""
         await database.set_pm_users(userid)
         return await send_message(message, msg, buttons.build_menu(1))
     elif len(message.command) > 1 and message.command[1] != "start":

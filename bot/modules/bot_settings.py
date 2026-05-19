@@ -65,6 +65,7 @@ from ..helper.telegram_helper.message_utils import (
     send_message,
     update_status_message,
     auto_delete_message,
+    reset_auto_delete_message,
 )
 from .rss import add_job
 from .search import initiate_search_tools
@@ -72,6 +73,7 @@ from .search import initiate_search_tools
 start = 0
 state = "view"
 handler_dict = {}
+quota_prompt_dict = {}
 DEFAULT_VALUES = {
     "LEECH_SPLIT_SIZE": TgClient.MAX_SPLIT_SIZE,
     "RSS_DELAY": 600,
@@ -523,14 +525,14 @@ async def get_quota_user(client, user_id):
 
 
 async def show_quota_user_menu(message, user_id, user=None, owner_id=0):
-    text = await quota_get_usage(user_id, user=user)
+    text = await quota_get_usage(user_id, user=user, show_upgrade=False)
     buttons = ButtonMaker()
     reply_user = getattr(getattr(message, "reply_to_message", None), "from_user", None)
     owner_id = owner_id or getattr(reply_user, "id", 0) or user_id
     vip = quota_summary(user_id).get("vip", {})
     vip_toggle = "Disable VIP" if vip.get("active") else "Enable VIP"
     buttons.data_button("Reset Quota", f"botset quotauser reset {user_id} {owner_id}")
-    buttons.data_button("Set VIP Limit", f"botset quotauser viplimit {user_id} {owner_id}")
+    buttons.data_button("Set VIP Daily", f"botset quotauser viplimit {user_id} {owner_id}")
     buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id} {owner_id}")
     buttons.data_button("Set VIP Days", f"botset quotauser vipdays {user_id} {owner_id}")
     buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id} {owner_id}")
@@ -538,6 +540,22 @@ async def show_quota_user_menu(message, user_id, user=None, owner_id=0):
     buttons.data_button("Back", "botset quota", position="footer")
     buttons.data_button("Close", "botset close", position="footer")
     await edit_message(message, text, buttons.build_menu(2))
+
+
+async def cancel_quota_prompt(chat_id):
+    if prompt := quota_prompt_dict.pop(chat_id, None):
+        handler_dict[chat_id] = False
+        await delete_message(prompt)
+
+
+async def send_quota_value_prompt(message, text):
+    await cancel_quota_prompt(message.chat.id)
+    buttons = ButtonMaker()
+    buttons.data_button("Cancel", "botset quotapromptcancel")
+    prompt = await send_message(message, text, buttons.build_menu(1))
+    if not isinstance(prompt, str):
+        quota_prompt_dict[message.chat.id] = prompt
+    return prompt
 
 
 @new_task
@@ -553,6 +571,7 @@ async def edit_quota_extra_amount(_, message, pre_message, prompt_message, user_
     if action == "remove":
         amount = -amount
     await quota_add_extra(user_id, amount)
+    quota_prompt_dict.pop(prompt_message.chat.id, None)
     await delete_message(message)
     await delete_message(prompt_message)
     await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
@@ -579,6 +598,7 @@ async def edit_quota_vip_value(_, message, pre_message, prompt_message, user_id,
             return await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
     else:
         await quota_set_vip_days(user_id, value)
+    quota_prompt_dict.pop(prompt_message.chat.id, None)
     await delete_message(message)
     await delete_message(prompt_message)
     await show_quota_user_menu(pre_message, user_id, user, message.from_user.id)
@@ -833,8 +853,12 @@ async def edit_bot_settings(client, query):
     handler_dict[message.chat.id] = False
     if data[1] == "close":
         await query.answer()
+        await cancel_quota_prompt(message.chat.id)
         await delete_message(message.reply_to_message)
         await delete_message(message)
+    elif data[1] == "quotapromptcancel":
+        await query.answer("Cancelled")
+        await cancel_quota_prompt(message.chat.id)
     elif data[1] == "back":
         await query.answer()
         globals()["start"] = 0
@@ -1152,12 +1176,13 @@ async def edit_bot_settings(client, query):
         owner_id = int(data[4]) if len(data) > 4 else query.from_user.id
         if query.from_user.id != owner_id:
             return await query.answer("Not Yours!", show_alert=True)
+        reset_auto_delete_message(f"quota_menu:{message.chat.id}:{message.id}", message, getattr(message, "reply_to_message", None), stime=60)
         user = await get_quota_user(client, user_id)
         if action == "reset":
             await quota_reset_today(user_id)
             await show_quota_user_menu(message, user_id, user, owner_id)
         elif action in {"add", "remove"}:
-            prompt = await send_message(
+            prompt = await send_quota_value_prompt(
                 message,
                 f"Send amount to {'add to' if action == 'add' else 'remove from'} extra quota for <code>{user_id}</code>. Timeout: 60 sec",
             )
@@ -1177,7 +1202,7 @@ async def edit_bot_settings(client, query):
                 if action == "viplimit"
                 else "Send VIP duration in days. Example: <code>30</code>. Use <code>0</code> for forever. Timeout: 60 sec"
             )
-            prompt = await send_message(message, prompt_text)
+            prompt = await send_quota_value_prompt(message, prompt_text)
             pfunc = partial(
                 edit_quota_vip_value,
                 pre_message=message,

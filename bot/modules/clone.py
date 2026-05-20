@@ -40,6 +40,7 @@ from ..helper.telegram_helper.message_utils import (
     delete_message,
     send_message,
     send_status_message,
+    set_message_reaction,
 )
 
 
@@ -120,6 +121,7 @@ class Clone(TaskListener):
         await self.run_multi(input_list, Clone)
 
         if len(self.link) == 0:
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, COMMAND_USAGE["clone"][0], COMMAND_USAGE["clone"][1]
             )
@@ -129,11 +131,13 @@ class Clone(TaskListener):
         try:
             await self.before_start()
         except Exception as e:
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, e)
             await delete_links(self.message)
             return
 
         self._set_mode_engine()
+        await set_message_reaction(self.message, "✅")
         await delete_links(self.message)
 
         await self._proceed_to_clone(sync)

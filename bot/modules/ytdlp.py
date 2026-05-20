@@ -28,6 +28,7 @@ from ..helper.telegram_helper.message_utils import (
     delete_message,
     edit_message,
     send_message,
+    set_message_reaction,
 )
 
 
@@ -444,12 +445,15 @@ class YtDlp(TaskListener):
             self.link = reply_to.text.split("\n", 1)[0].strip()
 
         if not is_url(self.link):
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, COMMAND_USAGE["yt"][0], COMMAND_USAGE["yt"][1]
             )
             await self.remove_from_same_dir()
             await delete_links(self.message)
             return
+
+        await set_message_reaction(self.message, "✅")
 
         if "mdisk.me" in self.link:
             self.name, self.link = await _mdisk(self.link, self.name)

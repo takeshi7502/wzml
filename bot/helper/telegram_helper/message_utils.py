@@ -28,6 +28,65 @@ from ..ext_utils.bot_utils import SetInterval
 from ..ext_utils.exceptions import TgLinkException
 from ..ext_utils.status_utils import get_readable_message
 
+try:
+    from pyrogram.types import ReactionTypeEmoji
+except ImportError:
+    ReactionTypeEmoji = None
+
+try:
+    from pyrogram.raw.functions.messages import SendReaction
+    from pyrogram.raw.types import ReactionEmoji
+except ImportError:
+    SendReaction = None
+    ReactionEmoji = None
+
+
+async def set_message_reaction(message, emoji):
+    """Safely set a reaction emoji on a message. Failures must not break tasks."""
+    if getattr(message, "is_mock", False):
+        return
+    emoji = {"✅": "👍", "❌": "👎"}.get(emoji, emoji)
+
+    errors = []
+    if ReactionTypeEmoji is not None:
+        reaction = [ReactionTypeEmoji(emoji=emoji)]
+        try:
+            await message.react(reaction)
+            return
+        except Exception as e:
+            errors.append(f"message.react typed: {e}")
+        try:
+            await message._client.set_reaction(
+                chat_id=message.chat.id,
+                message_id=message.id,
+                reaction=reaction,
+            )
+            return
+        except Exception as e:
+            errors.append(f"client.set_reaction typed: {e}")
+
+    try:
+        await message.react(emoji)
+        return
+    except Exception as e:
+        errors.append(f"message.react raw: {e}")
+
+    if SendReaction is not None and ReactionEmoji is not None:
+        try:
+            peer = await message._client.resolve_peer(message.chat.id)
+            await message._client.invoke(
+                SendReaction(
+                    peer=peer,
+                    msg_id=message.id,
+                    reaction=[ReactionEmoji(emoticon=emoji)],
+                    add_to_recent=True,
+                )
+            )
+            return
+        except Exception as e:
+            errors.append(f"raw SendReaction: {e}")
+
+    LOGGER.warning(f"Unable to set reaction {emoji}: {' | '.join(errors)}")
 
 async def send_message(message, text, buttons=None, block=True, photo=None, **kwargs):
     # Discord MockMessage early path — bypass all Telegram logic

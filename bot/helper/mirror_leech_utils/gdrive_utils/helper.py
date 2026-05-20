@@ -41,6 +41,7 @@ class GoogleDriveHelper:
         self.service = None
         self.total_files = 0
         self.total_folders = 0
+        self.upload_total_files = 0
         self.file_processed_bytes = 0
         self.proc_bytes = 0
         self.total_time = 0

@@ -1,7 +1,7 @@
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from logging import getLogger
-from os import path as ospath, listdir, remove
+from os import path as ospath, listdir, remove, walk
 from tenacity import (
     retry,
     wait_exponential,
@@ -65,6 +65,8 @@ class GoogleDriveUpload(GoogleDriveHelper):
                     ospath.basename(ospath.abspath(self.listener.name)),
                     self.listener.up_dest,
                 )
+                self.upload_total_files = sum(len(files) for _, __, files in walk(self._path))
+                LOGGER.info(f"GDrive upload: {self.upload_total_files} files")
                 result = self._upload_dir(self._path, dir_id)
                 if result is None:
                     raise ValueError("Upload has been manually cancelled!")

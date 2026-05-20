@@ -8,7 +8,7 @@ from re import findall, match, search
 from requests import Session, post, get, RequestException
 from requests.adapters import HTTPAdapter
 from time import sleep, time
-from urllib.parse import parse_qs, urlparse, quote
+from urllib.parse import parse_qs, urlparse, quote, unquote
 from urllib3.util.retry import Retry
 from uuid import uuid4
 from base64 import b64decode, b64encode
@@ -154,6 +154,8 @@ def direct_link_generator(link):
         return debrid_link(link)
     elif "yadi.sk" in link or "disk.yandex." in link:
         return yandex_disk(link)
+    elif any(x in domain for x in ["photos.app.goo.gl", "photos.google.com"]):
+        return google_photos(link)
     elif "buzzheavier.com" in domain:
         return buzzheavier(link)
     elif "devuploads" in domain:
@@ -2094,3 +2096,85 @@ def instagram(link: str) -> str:
 
     except Exception as e:
         raise DirectDownloadLinkException(f"ERROR: {e}")
+
+
+def google_photos(link):
+    """Generate image direct links from a public Google Photos share page.
+
+    Google Photos embeds public media metadata in the page JS. Videos are
+    intentionally skipped for now because the exposed video-download URLs are
+    not reliably fetchable without extra private API/token handling.
+    """
+    session = Session()
+    session.headers.update({"User-Agent": user_agent})
+    try:
+        res = session.get(link, timeout=30)
+        res.raise_for_status()
+        html = res.text
+        final_url = res.url
+    except RequestException as e:
+        session.close()
+        raise DirectDownloadLinkException(
+            f"ERROR: Failed to fetch Google Photos page: {e.__class__.__name__}"
+        ) from e
+    finally:
+        session.close()
+
+    item_pattern = (
+        r'\["(AF1Qip[^"\\]+)",\["'
+        r'(https://lh3\.googleusercontent\.com/pw/[^"\\]+)"\s*,\s*'
+        r'(\d+)\s*,\s*(\d+)'
+    )
+    matches = findall(item_pattern, html)
+    if not matches:
+        raise DirectDownloadLinkException(
+            "ERROR: No public Google Photos images found. Make sure the link is publicly shared."
+        )
+
+    contents = []
+    seen = set()
+    video_count = 0
+    for media_id, media_url, width, height in matches:
+        base_url = media_url.split("=", 1)[0]
+        if base_url in seen:
+            continue
+        seen.add(base_url)
+
+        item_start = html.find(f'["{media_id}"')
+        item_end = html.find(']],', item_start)
+        item_blob = html[item_start:item_end] if item_start != -1 and item_end != -1 else ""
+        if "video-downloads.googleusercontent.com" in item_blob:
+            video_count += 1
+            continue
+
+        index = len(contents) + 1
+        contents.append(
+            {
+                "filename": f"{index:03d}_{width}x{height}.jpg",
+                "path": "",
+                "url": f"{base_url}=w9999-h9999-no",
+            }
+        )
+
+    if not contents:
+        raise DirectDownloadLinkException(
+            "ERROR: No downloadable Google Photos images found. Videos are not supported yet."
+        )
+
+    title = "Google_Photos"
+    if title_match := search(
+        r"<meta\s+property=['\"]og:title['\"]\s+content=['\"]([^'\"]+)", html
+    ):
+        title = title_match.group(1).split("·", 1)[0].strip()
+    elif title_match := search(r"<title>(.*?)</title>", html):
+        title = title_match.group(1).replace("- Google Photos", "").strip()
+    elif parsed_title := urlparse(final_url).path.rstrip("/").split("/")[-1]:
+        title = parsed_title
+    title = unquote(title).replace(" ", "_")[:80]
+    return {
+        "contents": contents,
+        "title": title or "Google_Photos",
+        "total_size": 0,
+        "header": f"User-Agent:{user_agent}",
+        "video_count": video_count,
+    }

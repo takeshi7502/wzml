@@ -23,6 +23,8 @@ class GoogleDriveStatus:
 
     def status(self):
         if self._status == "up":
+            if getattr(self._obj, "upload_total_files", 0):
+                return f"{MirrorStatus.STATUS_UPLOAD} ({self._obj.total_files}/{self._obj.upload_total_files})"
             return MirrorStatus.STATUS_UPLOAD
         elif self._status == "dl":
             return MirrorStatus.STATUS_DOWNLOAD

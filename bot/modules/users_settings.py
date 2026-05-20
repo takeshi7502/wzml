@@ -369,6 +369,9 @@ async def get_user_settings(from_user, stype="main"):
             "Mics Settings", f"userset {user_id} advanced", position="l_body"
         )
 
+        if referral_enabled() and user_id != Config.OWNER_ID and user_id not in sudo_users:
+            buttons.data_button("🎁 Invite Friends", f"userset {user_id} referral", position="l_body")
+
         if user_dict and any(
             key in user_dict
             for key in list(user_settings_text.keys())
@@ -387,8 +390,6 @@ async def get_user_settings(from_user, stype="main"):
             buttons.data_button(
                 "Reset All", f"userset {user_id} confirm_reset_all", position="footer"
             )
-        if referral_enabled() and user_id != Config.OWNER_ID and user_id not in sudo_users:
-            buttons.data_button("🎁 Invite Friends", f"userset {user_id} referral", position="footer")
         buttons.data_button("Close", f"userset {user_id} close", position="footer")
 
         quota = quota_summary(user_id)
@@ -411,6 +412,11 @@ async def get_user_settings(from_user, stype="main"):
                 "┠ <b>Need more quota free? Click <u>Invite Friends</u> below!</b>\r\n"
                 f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
             )
+        dm_hint = (
+            "You can use all commands in bot DM with VIP!"
+            if vip.get("active") and user_id != Config.OWNER_ID and user_id not in sudo_users
+            else "You can use this command in DM!"
+        )
         text = f"""⌬ <b>User Settings :</b>
 ┃
 ┟ <b>Name</b> → {user_display}
@@ -419,7 +425,7 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Pending Tasks</b> → {pending_tasks}
 ┠ <b>Reset After</b> → {reset_after}
 {vip_text}
-=> <b><i>You can use this command in DM!</i></b>"""
+=> <b><i>{dm_hint}</i></b>"""
 
         btns = buttons.build_menu(2)
 
@@ -1648,8 +1654,18 @@ async def edit_user_settings(client, query):
         if data[3] == "yes":
             await query.answer("Reset Done!", show_alert=True)
             user_dict = user_data.get(user_id, {})
+            protected_keys = {
+                "SUDO",
+                "AUTH",
+                "VERIFY_TOKEN",
+                "VERIFY_TIME",
+                "VIP_ENABLED",
+                "VIP_DAILY_LIMIT",
+                "VIP_START_AT",
+                "VIP_EXPIRE_AT",
+            }
             for k in list(user_dict.keys()):
-                if k not in ("SUDO", "AUTH", "VERIFY_TOKEN", "VERIFY_TIME"):
+                if k not in protected_keys:
                     del user_dict[k]
             for fpath in [thumb_path, rclone_conf, token_pickle, yt_cookie_path]:
                 if await aiopath.exists(fpath):

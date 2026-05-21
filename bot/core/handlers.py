@@ -383,6 +383,7 @@ def add_handlers():
         def insert_at(d, k, v, i):
             return dict(list(d.items())[:i] + [(k, v)] + list(d.items())[i:])
 
+
         if Config.JD_EMAIL and Config.JD_PASS:
             BOT_COMMANDS = insert_at(
                 BOT_COMMANDS,

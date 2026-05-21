@@ -135,6 +135,11 @@ RCLONE_SERVE_PASS = ""
 JD_EMAIL = ""
 JD_PASS = ""
 
+# PikPak
+PIKPAK_REFRESH_TOKEN = ""
+PIKPAK_DEVICE_ID = ""
+PIKPAK_PROXY = ""
+
 # Sabnzbd
 USENET_SERVERS = [
     {

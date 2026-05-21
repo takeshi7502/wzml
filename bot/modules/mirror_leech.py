@@ -36,6 +36,9 @@ from ..helper.mirror_leech_utils.download_utils.gd_download import add_gd_downlo
 from ..helper.mirror_leech_utils.download_utils.jd_download import add_jd_download
 from ..helper.mirror_leech_utils.download_utils.mega_download import add_mega_download
 from ..helper.mirror_leech_utils.download_utils.nzb_downloader import add_nzb
+from ..helper.mirror_leech_utils.download_utils.pikpak_direct_link import (
+    resolve_pikpak_link,
+)
 from ..helper.mirror_leech_utils.download_utils.qbit_download import add_qb_torrent
 from ..helper.mirror_leech_utils.download_utils.rclone_download import (
     add_rclone_download,
@@ -43,6 +46,7 @@ from ..helper.mirror_leech_utils.download_utils.rclone_download import (
 from ..helper.mirror_leech_utils.download_utils.telegram_download import (
     TelegramDownloadHelper,
 )
+from ..helper.mirror_leech_utils.pikpak_utils.pikpak_client import is_pikpak_share_url
 from ..helper.telegram_helper.message_utils import (
     auto_delete_message,
     delete_links,
@@ -355,6 +359,7 @@ class Mirror(TaskListener):
             and not is_gdrive_id(self.link)
             and not is_gdrive_link(self.link)
             and not is_mega_link(self.link)
+            and not is_pikpak_share_url(self.link)
         ):
             await set_message_reaction(self.message, "❌")
             await send_message(
@@ -366,6 +371,18 @@ class Mirror(TaskListener):
 
         if len(self.link) > 0:
             LOGGER.info(self.link)
+
+        original_pikpak_link = self.link if is_pikpak_share_url(self.link) else ""
+        if original_pikpak_link:
+            try:
+                download = await resolve_pikpak_link(self, original_pikpak_link)
+                self.link = download["url"]
+            except Exception as e:
+                await set_message_reaction(self.message, "❌")
+                await send_message(self.message, f"PikPak error: {e}")
+                await self.remove_from_same_dir()
+                await delete_links(self.message)
+                return
 
         try:
             await self.before_start()
@@ -395,7 +412,8 @@ class Mirror(TaskListener):
             return
 
         if (
-            not self.is_jd
+            not original_pikpak_link
+            and not self.is_jd
             and not self.is_nzb
             and not self.is_qbit
             and not is_magnet(self.link)

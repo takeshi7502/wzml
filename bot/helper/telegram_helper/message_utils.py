@@ -1,4 +1,5 @@
 from asyncio import sleep, gather, create_task
+from random import shuffle
 from re import match as re_match
 from time import time
 
@@ -40,53 +41,81 @@ except ImportError:
     SendReaction = None
     ReactionEmoji = None
 
+SUCCESS_REACTIONS = ["😁", "👌", "👍", "❤️", "🔥", "😎", "🤩", "💯"]
+FAIL_REACTIONS = ["🙏", "🤨", "👎", "💔", "😢", "🖕", "🥴"]
+_reaction_bad_cache = {}
+
+
+def _get_reaction_candidates(chat_id, emoji):
+    if emoji == "✅":
+        candidates = SUCCESS_REACTIONS.copy()
+    elif emoji == "❌":
+        candidates = FAIL_REACTIONS.copy()
+    else:
+        candidates = [emoji]
+    bad = _reaction_bad_cache.get(chat_id, set())
+    candidates = [candidate for candidate in candidates if candidate not in bad]
+    shuffle(candidates)
+    return candidates
+
 
 async def set_message_reaction(message, emoji):
-    """Safely set a reaction emoji on a message. Failures must not break tasks."""
+    """Safely set a random valid reaction emoji on a message."""
     if getattr(message, "is_mock", False):
         return
-    emoji = {"✅": "👍", "❌": "👎"}.get(emoji, emoji)
+
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    candidates = _get_reaction_candidates(chat_id, emoji)
+    if not candidates:
+        LOGGER.warning(f"No reaction candidates left for {emoji} in chat {chat_id}")
+        return
 
     errors = []
-    if ReactionTypeEmoji is not None:
-        reaction = [ReactionTypeEmoji(emoji=emoji)]
-        try:
-            await message.react(reaction)
-            return
-        except Exception as e:
-            errors.append(f"message.react typed: {e}")
-        try:
-            await message._client.set_reaction(
-                chat_id=message.chat.id,
-                message_id=message.id,
-                reaction=reaction,
-            )
-            return
-        except Exception as e:
-            errors.append(f"client.set_reaction typed: {e}")
-
-    try:
-        await message.react(emoji)
-        return
-    except Exception as e:
-        errors.append(f"message.react raw: {e}")
-
-    if SendReaction is not None and ReactionEmoji is not None:
-        try:
-            peer = await message._client.resolve_peer(message.chat.id)
-            await message._client.invoke(
-                SendReaction(
-                    peer=peer,
-                    msg_id=message.id,
-                    reaction=[ReactionEmoji(emoticon=emoji)],
-                    add_to_recent=True,
+    for candidate in candidates:
+        if ReactionTypeEmoji is not None:
+            reaction = [ReactionTypeEmoji(emoji=candidate)]
+            try:
+                await message.react(reaction)
+                return
+            except Exception as e:
+                errors.append(f"{candidate} message.react typed: {e}")
+            try:
+                await message._client.set_reaction(
+                    chat_id=message.chat.id,
+                    message_id=message.id,
+                    reaction=reaction,
                 )
-            )
+                return
+            except Exception as e:
+                errors.append(f"{candidate} client.set_reaction typed: {e}")
+
+        try:
+            await message.react(candidate)
             return
         except Exception as e:
-            errors.append(f"raw SendReaction: {e}")
+            errors.append(f"{candidate} message.react raw: {e}")
 
-    LOGGER.warning(f"Unable to set reaction {emoji}: {' | '.join(errors)}")
+        if SendReaction is not None and ReactionEmoji is not None:
+            try:
+                peer = await message._client.resolve_peer(message.chat.id)
+                await message._client.invoke(
+                    SendReaction(
+                        peer=peer,
+                        msg_id=message.id,
+                        reaction=[ReactionEmoji(emoticon=candidate)],
+                        add_to_recent=True,
+                    )
+                )
+                return
+            except Exception as e:
+                errors.append(f"{candidate} raw SendReaction: {e}")
+
+        if chat_id is not None:
+            _reaction_bad_cache.setdefault(chat_id, set()).add(candidate)
+
+    LOGGER.warning(
+        f"Unable to set reaction {emoji} in chat {chat_id}: {' | '.join(errors)}"
+    )
 
 async def send_message(message, text, buttons=None, block=True, photo=None, **kwargs):
     # Discord MockMessage early path — bypass all Telegram logic

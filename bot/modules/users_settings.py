@@ -408,8 +408,13 @@ async def get_user_settings(from_user, stype="main"):
             vip_text = f"┠ <b>VIP Status</b> → Active\r\n┖ <b>VIP Expires</b> → {vip.get('expires', 'N/A')}"
         else:
             admin_link = f"tg://user?id={Config.OWNER_ID}"
-            vip_text = (
+            referral_hint = (
                 "┠ <b>Need more quota free? Click <u>Invite Friends</u> below!</b>\r\n"
+                if referral_enabled()
+                else ""
+            )
+            vip_text = (
+                f"{referral_hint}"
                 f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
             )
         dm_hint = (

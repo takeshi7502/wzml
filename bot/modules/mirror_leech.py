@@ -379,6 +379,22 @@ class Mirror(TaskListener):
         self._set_mode_engine()
 
         if (
+            self.is_qbit
+            and file_ is None
+            and not is_magnet(self.link)
+            and not str(self.link).lower().endswith(".torrent")
+            and not await aiopath.exists(self.link)
+        ):
+            await set_message_reaction(self.message, "❌")
+            await send_message(
+                self.message,
+                f"{self.tag} This command only supports magnet links or .torrent files/links.",
+            )
+            await self.remove_from_same_dir()
+            await delete_links(self.message)
+            return
+
+        if (
             not self.is_jd
             and not self.is_nzb
             and not self.is_qbit

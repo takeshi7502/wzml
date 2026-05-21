@@ -192,9 +192,14 @@ def _usage_text(user_id, quota, exceeded=False, user=None, show_upgrade=True):
     if exceeded:
         us_cmd = f"/us{Config.CMD_SUFFIX}"
         admin_link = f"tg://user?id={Config.OWNER_ID}"
+        referral_tip = (
+            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b><u>Invite Friends</u></b> to more mirror uses free.\n"
+            if Config.REFERRAL_ENABLED
+            else ""
+        )
         return (
             "┠ <b><i>You've used up all your free mirror uses for today! ⚠️</i></b>\n"
-            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b><u>Invite Friends</u></b> to more mirror uses free.\n"
+            f"{referral_tip}"
             f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
         )
     vip = summary["vip"]

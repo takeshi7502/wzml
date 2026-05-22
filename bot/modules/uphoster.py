@@ -1,4 +1,5 @@
 from base64 import b64encode
+from secrets import token_hex
 from re import match as re_match
 from urllib.parse import parse_qs, urlparse
 
@@ -37,6 +38,9 @@ from ..helper.mirror_leech_utils.download_utils.gd_download import add_gd_downlo
 from ..helper.mirror_leech_utils.download_utils.jd_download import add_jd_download
 from ..helper.mirror_leech_utils.download_utils.mega_download import add_mega_download
 from ..helper.mirror_leech_utils.download_utils.nzb_downloader import add_nzb
+from ..helper.mirror_leech_utils.download_utils.pikpak_direct_link import (
+    resolve_pikpak_link,
+)
 from ..helper.mirror_leech_utils.download_utils.qbit_download import add_qb_torrent
 from ..helper.mirror_leech_utils.download_utils.rclone_download import (
     add_rclone_download,
@@ -45,6 +49,7 @@ from ..helper.mirror_leech_utils.download_utils.telegram_download import (
     TelegramDownloadHelper,
 )
 from ..helper.mirror_leech_utils.download_utils.yt_dlp_download import YoutubeDLHelper
+from ..helper.mirror_leech_utils.pikpak_utils.pikpak_client import is_pikpak_share_url
 from .ytdlp import YtSelection, extract_info
 from ..helper.telegram_helper.message_utils import (
     auto_delete_message,
@@ -370,6 +375,7 @@ class Uphoster(TaskListener):
             and not is_gdrive_id(self.link)
             and not is_gdrive_link(self.link)
             and not is_mega_link(self.link)
+            and not is_pikpak_share_url(self.link)
         ):
             await set_message_reaction(self.message, "❌")
             await send_message(
@@ -382,9 +388,60 @@ class Uphoster(TaskListener):
         if len(self.link) > 0:
             LOGGER.info(self.link)
 
+        original_pikpak_link = self.link if is_pikpak_share_url(self.link) else ""
+        if original_pikpak_link:
+            try:
+                download = await resolve_pikpak_link(self, original_pikpak_link)
+                if isinstance(download, dict) and download.get("contents"):
+                    self.link = download
+                    self.name = download.get("title") or self.name
+                    self.pikpak_cleanup_ids = download.get("cleanup_ids", []) or []
+                    pikpak_folder_bundle = download
+                elif isinstance(download, list):
+                    downloads = [item for item in download if item.get("url")]
+                    if not downloads:
+                        raise DirectDownloadLinkException(
+                            "ERROR: PikPak did not return any downloadable file for this folder."
+                        )
+                    folder_name = downloads[0].get("folder_name") or "PikPak Folder"
+                    folder_suffix = folder_name.strip("/")
+                    if folder_suffix and not self.folder_name:
+                        self.folder_name = f"/{folder_suffix}"
+                    if len(downloads) > 1 and not self.multi_tag:
+                        self.multi_tag = token_hex(3)
+                    if len(downloads) > 1:
+                        self.multi = len(downloads)
+                        self.bulk = [item["url"] for item in downloads[1:]]
+                        if self.folder_name:
+                            async with task_dict_lock:
+                                self.same_dir = {
+                                    self.folder_name: {
+                                        "total": self.multi,
+                                        "tasks": {self.mid},
+                                    }
+                                }
+                        self.options = f"-m {folder_name}"
+                        await self.run_multi(input_list, Uphoster)
+                    self.link = downloads[0]["url"]
+                    self.name = downloads[0].get("name", self.name)
+                    self.pikpak_cleanup_ids = downloads[0].get("cleanup_ids", []) or []
+                else:
+                    self.link = download["url"]
+            except Exception as e:
+                await set_message_reaction(self.message, "❌")
+                await send_message(self.message, f"PikPak error: {e}")
+                await self.remove_from_same_dir()
+                await delete_links(self.message)
+                return
+
+        pikpak_folder_bundle = locals().get("pikpak_folder_bundle")
+        if pikpak_folder_bundle:
+            self.link = original_pikpak_link
         try:
             await self.before_start()
         except Exception as e:
+            if pikpak_folder_bundle:
+                self.link = pikpak_folder_bundle
             if not self.is_ytdlp:
                 await set_message_reaction(self.message, "❌")
             await send_message(self.message, e)
@@ -395,7 +452,8 @@ class Uphoster(TaskListener):
         self._set_mode_engine()
 
         if (
-            not self.is_jd
+            not original_pikpak_link
+            and not self.is_jd
             and not self.is_nzb
             and not self.is_qbit
             and not is_magnet(self.link)
@@ -434,6 +492,9 @@ class Uphoster(TaskListener):
 
         await set_message_reaction(self.message, "✅")
         await delete_links(self.message)
+
+        if pikpak_folder_bundle:
+            self.link = pikpak_folder_bundle
 
         if file_ is not None:
             await TelegramDownloadHelper(self).add_download(

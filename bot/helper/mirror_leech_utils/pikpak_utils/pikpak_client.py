@@ -37,6 +37,7 @@ _CAPTCHA_SALTS = [
     "ihtqpG6FMt65+Xk+tWUH2",
     "NhXXU9rg4XXdzo7u5o",
 ]
+_TOKEN_LOCK = Lock()
 
 
 def _to_int(value):
@@ -259,20 +260,27 @@ class PikPakClient:
         async with self.lock:
             if self.access_token and time() < self.refresh_at:
                 return self.access_token
-            data = await self._request(
-                "POST",
-                f"{AUTH_BASE}/v1/auth/token",
-                headers={"X-Device-Id": self.device_id},
-                json={
-                    "client_id": AUTH_CLIENT_ID,
-                    "grant_type": "refresh_token",
-                    "refresh_token": self.refresh_token,
-                },
-            )
-            self.access_token = data.get("access_token", "")
-            self.user_id = data.get("sub", "")
-            self.refresh_at = time() + max(_to_int(data.get("expires_in")) - 60, 5)
-            await self._save_rotated_refresh_token(data.get("refresh_token", ""))
+            async with _TOKEN_LOCK:
+                latest_token = Config.PIKPAK_REFRESH_TOKEN.strip()
+                if latest_token and latest_token != self.refresh_token:
+                    self.refresh_token = latest_token
+                    self.device_id = Config.PIKPAK_DEVICE_ID.strip() or md5(
+                        self.refresh_token.encode()
+                    ).hexdigest()
+                data = await self._request(
+                    "POST",
+                    f"{AUTH_BASE}/v1/auth/token",
+                    headers={"X-Device-Id": self.device_id},
+                    json={
+                        "client_id": AUTH_CLIENT_ID,
+                        "grant_type": "refresh_token",
+                        "refresh_token": self.refresh_token,
+                    },
+                )
+                self.access_token = data.get("access_token", "")
+                self.user_id = data.get("sub", "")
+                self.refresh_at = time() + max(_to_int(data.get("expires_in")) - 60, 5)
+                await self._save_rotated_refresh_token(data.get("refresh_token", ""))
             if not self.access_token:
                 raise DirectDownloadLinkException("ERROR: PikPak access token empty!")
             return self.access_token

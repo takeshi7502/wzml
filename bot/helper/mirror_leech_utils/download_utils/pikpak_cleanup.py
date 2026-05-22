@@ -1,5 +1,25 @@
 from .... import LOGGER, task_dict, task_dict_lock
 from ..pikpak_utils.pikpak_client import PikPakClient
+from ...telegram_helper.message_utils import send_message
+
+
+def _is_pikpak_token_error(error):
+    return "PikPak refresh token is invalid or expired" in str(error)
+
+
+def _cleanup_error_summary(error):
+    message = str(error).splitlines()[0].strip()
+    return message or error.__class__.__name__
+
+
+async def _send_pikpak_token_error(listener):
+    message = getattr(listener, "message", None)
+    if message is None:
+        return
+    await send_message(
+        message,
+        "PikPak error: ERROR: PikPak refresh token is invalid or expired.",
+    )
 
 
 async def cleanup_pikpak_restored(listener):
@@ -36,4 +56,10 @@ async def cleanup_pikpak_restored(listener):
         LOGGER.info("PikPak restored resource cleanup completed: %s", ", ".join(cleanup_ids))
         listener.pikpak_cleanup_ids = []
     except Exception as e:
-        LOGGER.warning("PikPak restored resource cleanup failed for %s: %s", cleanup_ids, e)
+        LOGGER.warning(
+            "PikPak restored resource cleanup failed for %s: %s",
+            cleanup_ids,
+            _cleanup_error_summary(e),
+        )
+        if _is_pikpak_token_error(e):
+            await _send_pikpak_token_error(listener)

@@ -4,6 +4,7 @@ from aiohttp.client_exceptions import ClientError
 from ... import LOGGER
 from ...core.torrent_manager import TorrentManager, aria2_name
 from ..mirror_leech_utils.pikpak_utils.pikpak_client import PikPakClient
+from ..telegram_helper.message_utils import send_message
 
 
 class DirectListener:
@@ -43,8 +44,19 @@ class DirectListener:
         content["size"] = size
         self.listener.size += size
 
+    def _is_pikpak_token_error(self, error):
+        return "PikPak refresh token is invalid or expired" in str(error)
+
+    async def _send_pikpak_token_error(self):
+        await send_message(
+            self.listener.message,
+            "PikPak error: ERROR: PikPak refresh token is invalid or expired.",
+        )
+
     async def download(self, contents):
         self.is_downloading = True
+        pikpak = None
+        token_error = False
         for content in contents:
             if self.listener.is_cancelled:
                 break
@@ -56,7 +68,8 @@ class DirectListener:
             self._a2c_opt["out"] = filename
             try:
                 if not content.get("url") and content.get("pikpak_file_id"):
-                    pikpak = PikPakClient()
+                    if pikpak is None:
+                        pikpak = PikPakClient()
                     restore_data = await pikpak.restore_share(
                         content["pikpak_share_id"],
                         content.get("pikpak_pass_code_token"),
@@ -83,6 +96,11 @@ class DirectListener:
                     uris=[content["url"]], options=self._a2c_opt, position=0
                 )
             except (TimeoutError, ClientError, Exception) as e:
+                if self._is_pikpak_token_error(e):
+                    token_error = True
+                    LOGGER.error(f"Unable to download {filename} due to PikPak token error")
+                    await self._send_pikpak_token_error()
+                    break
                 self._failed += 1
                 LOGGER.error(f"Unable to download {filename} due to: {e}")
                 continue
@@ -110,7 +128,7 @@ class DirectListener:
             self.download_task = None
         if self.listener.is_cancelled:
             return
-        if self._failed == len(contents):
+        if self._failed == len(contents) or (token_error and self._proc_bytes <= 0):
             await self.listener.on_download_error("All files are failed to download!")
             return
         await self.listener.on_download_complete()

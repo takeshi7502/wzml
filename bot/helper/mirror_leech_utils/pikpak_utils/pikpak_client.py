@@ -111,10 +111,19 @@ def _pick_pass_code_token(data):
         return ""
     candidates = [data, data.get("share") or {}, data.get("data") or {}]
     for item in candidates:
-        if isinstance(item, dict):
-            token = item.get("pass_code_token") or item.get("passCodeToken") or item.get("access_token")
-            if token:
-                return token
+        if not isinstance(item, dict):
+            continue
+        token = item.get("pass_code_token") or item.get("passCodeToken") or item.get("access_token")
+        if isinstance(token, dict):
+            token = (
+                token.get("token")
+                or token.get("value")
+                or token.get("pass_code_token")
+                or token.get("passCodeToken")
+                or ""
+            )
+        if isinstance(token, (str, bytes)):
+            return token.decode() if isinstance(token, bytes) else token
     return ""
 
 
@@ -208,6 +217,7 @@ class PikPakClient:
             async with session.request(method, url, **kwargs) as resp:
                 text = await resp.text()
                 if resp.status >= 400:
+                    normalized = text.lower().replace(" ", "")
                     if "invalid_grant" in text or "invalid refresh token" in text.lower():
                         owner = f'<a href="tg://user?id={Config.OWNER_ID}">OWNER</a>'
                         raise DirectDownloadLinkException(
@@ -215,6 +225,17 @@ class PikPakClient:
                             f"┠ <b>Owner</b> → {owner}\n"
                             "┠ <b>Action</b> → Update <code>PIKPAK_REFRESH_TOKEN</code> in Bot Settings.\n"
                             "┖ <b>Note</b> → The old refresh token may have been refreshed by another process."
+                        )
+                    if (
+                        "file_space_not_enough" in text
+                        or '"error_code":8' in normalized
+                        or "insufficientcloudstorage" in normalized
+                    ):
+                        raise DirectDownloadLinkException(
+                            "ERROR: PikPak cloud storage is full.\n"
+                            "┠ <b>Reason</b> → Insufficient cloud storage.\n"
+                            "┠ <b>Fix</b> → Free up PikPak Drive space or upgrade Premium.\n"
+                            "┖ <b>Then</b> → Retry this mirror task."
                         )
                     raise DirectDownloadLinkException(
                         f"ERROR: PikPak API {resp.status}: {text[:500]}"
@@ -542,7 +563,7 @@ class PikPakClient:
             "/drive/v1/share/detail",
             "GET:/drive/v1/share/detail",
             params={
-                "limit": "100",
+                "limit": "500",
                 "thumbnail_size": "SIZE_LARGE",
                 "order": "6",
                 "share_id": share_id,
@@ -550,6 +571,57 @@ class PikPakClient:
                 "pass_code_token": pass_code_token or "",
             },
         )
+
+    async def _collect_share_files(
+        self,
+        share_id,
+        pass_code_token,
+        items,
+        root_name="",
+        current_path="",
+        debug=None,
+    ):
+        files = []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            name = item.get("name") or item.get("title") or item.get("id")
+            kind = item.get("kind", "")
+            if kind == "drive#folder":
+                folder_root = root_name or name or "PikPak Folder"
+                folder_path = f"{current_path}/{name}".strip("/")
+                if debug is not None:
+                    debug.append(f"walk folder: {_debug_item(item)} path={folder_path}")
+                folder_data = await self.get_share_folder(
+                    share_id, pass_code_token, item.get("id")
+                )
+                children = _pick_share_items(folder_data)
+                if debug is not None:
+                    debug.append(
+                        f"folder detail: id={item.get('id','')[:12]} children={len(children)}"
+                    )
+                nested = await self._collect_share_files(
+                    share_id,
+                    pass_code_token,
+                    children,
+                    folder_root,
+                    folder_path,
+                    debug,
+                )
+                files.extend(nested)
+                continue
+            file_path = f"{current_path}/{name}".strip("/")
+            files.append(
+                {
+                    "id": item.get("id"),
+                    "name": name,
+                    "kind": kind,
+                    "folder_name": root_name or "PikPak Folder",
+                    "relative_path": file_path,
+                    "share_item": item,
+                }
+            )
+        return files
 
     async def restore_share(self, share_id, pass_code_token="", file_ids=None):
         payload = {
@@ -647,32 +719,79 @@ class PikPakClient:
             debug_lines.append(f"share_items={len(items)} token={'yes' if pass_code_token else 'no'}")
             for item in items[:5]:
                 debug_lines.append(f"share item: {_debug_item(item)}")
-        file_ids = [item.get("id") for item in items if isinstance(item, dict) and item.get("id")]
-        if not file_ids:
+        share_files = await self._collect_share_files(
+            share_id, pass_code_token, items, debug=debug_lines
+        )
+        if not share_files:
             raise DirectDownloadLinkException(f"ERROR: PikPak share contains no restorable files: {share_info}")
-        restore_data = await self.restore_share(share_id, pass_code_token, file_ids)
         if debug_lines is not None:
-            debug_lines.append(
-                f"restore keys={_debug_keys(restore_data)} task={_pick_task_id(restore_data)[:12]} file={_pick_file_id(restore_data)[:12]}"
-            )
-        saved = await self.wait_saved_file(restore_data, metadata=True)
-        file_id = saved["file_id"]
-        cleanup_id = saved.get("cleanup_id") or file_id
-        if debug_lines is not None:
-            debug_lines.append(f"restored file_id={file_id[:16]} cleanup_id={cleanup_id[:16]}")
-        download = await self.get_download_from_file_or_folder(file_id, debug_lines)
-        if cleanup_id:
+            debug_lines.append(f"share_files={len(share_files)}")
+
+        if len(share_files) == 1:
+            restore_ids = [share_files[0]["id"]]
+            restore_data = await self.restore_share(share_id, pass_code_token, restore_ids)
+            if debug_lines is not None:
+                debug_lines.append(
+                    f"restore keys={_debug_keys(restore_data)} task={_pick_task_id(restore_data)[:12]} file={_pick_file_id(restore_data)[:12]}"
+                )
+            saved = await self.wait_saved_file(restore_data, metadata=True)
+            file_id = saved["file_id"]
+            cleanup_id = saved.get("cleanup_id") or file_id
+            download = await self.get_download_from_file_or_folder(file_id, debug_lines)
             targets = download if isinstance(download, list) else [download]
-            for index, item in enumerate(targets):
-                item["cleanup_ids"] = [cleanup_id] if index == 0 else []
+            for item in targets:
+                item.setdefault("folder_name", share_files[0].get("folder_name") or item.get("name") or "PikPak Folder")
+                item.setdefault("relative_path", share_files[0].get("relative_path") or item.get("name", ""))
+                item["cleanup_ids"] = [cleanup_id] if cleanup_id else []
                 item["cleanup_kind"] = saved.get("cleanup_kind", "")
+            download = targets[0] if len(targets) == 1 else targets
+        else:
+            contents = []
+            folder_name = share_files[0].get("folder_name") or "PikPak Folder"
+            total_size = 0
+            for share_file in share_files:
+                relative_path = share_file.get("relative_path") or share_file.get("name", "")
+                prefix = f"{folder_name}/"
+                if relative_path.startswith(prefix):
+                    relative_path = relative_path[len(prefix):]
+                if "/" in relative_path:
+                    path, filename = relative_path.rsplit("/", 1)
+                else:
+                    path, filename = "", relative_path or share_file.get("name", "")
+                total_size += _to_int(share_file.get("size"))
+                contents.append(
+                    {
+                        "filename": filename or share_file.get("name", "PikPak File"),
+                        "path": path,
+                        "size": _to_int(share_file.get("size")),
+                        "pikpak_share_id": share_id,
+                        "pikpak_pass_code_token": pass_code_token,
+                        "pikpak_file_id": share_file["id"],
+                    }
+                )
+            download = {
+                "contents": contents,
+                "title": folder_name,
+                "total_size": total_size,
+                "cleanup_ids": [],
+                "type": "folder",
+            }
+
         if debug and debug_lines is not None:
             if isinstance(download, list):
                 for item in download:
                     item["debug"] = debug_lines
+            elif isinstance(download, dict) and download.get("contents"):
+                download["debug"] = debug_lines
             else:
                 download["debug"] = debug_lines
-        has_download = any(item.get("url") for item in download) if isinstance(download, list) else download.get("url")
+        has_download = (
+            bool(download.get("contents"))
+            if isinstance(download, dict) and "contents" in download
+            else any(item.get("url") for item in download)
+            if isinstance(download, list)
+            else download.get("url")
+        )
         if not has_download:
             detail = ""
             if debug_lines:
@@ -681,3 +800,4 @@ class PikPakClient:
                 f"ERROR: PikPak did not return a download URL for restored share.{detail}"
             )
         return download
+

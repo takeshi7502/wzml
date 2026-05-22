@@ -15,6 +15,13 @@ async def resolve_pikpak_link(listener, link, timeout=180):
     try:
         pikpak = PikPakClient()
         download = await wait_for(pikpak.save_share_and_get_download(link), timeout=timeout)
+        if isinstance(download, dict) and download.get("contents"):
+            if not getattr(listener, "name", ""):
+                listener.name = download.get("title", "PikPak Folder")
+            listener.source_url = link
+            listener.pikpak_cleanup_ids = download.get("cleanup_ids", []) or []
+            await edit_message(status_msg, "PikPak: folder links generated, starting download...")
+            return download
         downloads = download if isinstance(download, list) else [download]
         if not any(item.get("url") for item in downloads):
             raise ValueError("PikPak did not return a download URL for this share.")

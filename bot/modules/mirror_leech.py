@@ -377,7 +377,12 @@ class Mirror(TaskListener):
         if original_pikpak_link:
             try:
                 download = await resolve_pikpak_link(self, original_pikpak_link)
-                if isinstance(download, list):
+                if isinstance(download, dict) and download.get("contents"):
+                    self.link = download
+                    self.name = download.get("title") or self.name
+                    self.pikpak_cleanup_ids = download.get("cleanup_ids", []) or []
+                    pikpak_folder_bundle = download
+                elif isinstance(download, list):
                     downloads = [item for item in download if item.get("url")]
                     if not downloads:
                         raise DirectDownloadLinkException(
@@ -414,9 +419,14 @@ class Mirror(TaskListener):
                 await delete_links(self.message)
                 return
 
+        pikpak_folder_bundle = locals().get("pikpak_folder_bundle")
+        if pikpak_folder_bundle:
+            self.link = original_pikpak_link
         try:
             await self.before_start()
         except Exception as e:
+            if pikpak_folder_bundle:
+                self.link = pikpak_folder_bundle
             await set_message_reaction(self.message, "❌")
             await send_message(self.message, e)
             await self.remove_from_same_dir()
@@ -491,6 +501,9 @@ class Mirror(TaskListener):
 
         await set_message_reaction(self.message, "✅")
         await delete_links(self.message)
+
+        if pikpak_folder_bundle:
+            self.link = pikpak_folder_bundle
 
         if file_ is not None:
             await TelegramDownloadHelper(self).add_download(

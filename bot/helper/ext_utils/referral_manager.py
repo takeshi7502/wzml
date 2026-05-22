@@ -1,4 +1,7 @@
+from datetime import datetime
+from html import escape
 from time import time
+from zoneinfo import ZoneInfo
 
 from pyrogram.errors import UserNotParticipant
 
@@ -137,6 +140,45 @@ def subscribe_reward_rows(page=0, page_size=5):
     return rows[start : start + page_size], len(rows)
 
 
+def _usage_timezone():
+    try:
+        return ZoneInfo(Config.TIMEZONE)
+    except Exception:
+        return None
+
+
+def _format_usage_time(timestamp):
+    try:
+        timestamp = int(timestamp or 0)
+    except Exception:
+        timestamp = 0
+    if timestamp <= 0:
+        return "Unknown time"
+    tz = _usage_timezone()
+    dt = datetime.fromtimestamp(timestamp, tz) if tz else datetime.fromtimestamp(timestamp)
+    return dt.strftime("%Hh%Mm %d/%m/%Y")
+
+
+async def _user_link(client, user_id, cache=None):
+    try:
+        user_id = int(user_id)
+    except Exception:
+        return "Unknown"
+    if user_id <= 0:
+        return "Unknown"
+    cache = cache if cache is not None else {}
+    if user_id not in cache:
+        try:
+            cache[user_id] = await client.get_users(user_id) if client else None
+        except Exception:
+            cache[user_id] = None
+    user = cache.get(user_id)
+    if user is not None and hasattr(user, "mention"):
+        return user.mention(style="html")
+    name = escape(str(user_id))
+    return f'<a href="tg://user?id={user_id}">{name}</a>'
+
+
 async def save_referral_user(user_id):
     try:
         await database.update_user_data(user_id)
@@ -270,30 +312,49 @@ def referral_settings_text():
 ┖ ┖ <b>Total Claimed</b> → {subscribe_reward_total()}"""
 
 
-def referral_usage_text(page=0, page_size=5):
+async def referral_usage_text(client=None, page=0, page_size=5):
     rows, total = referral_usage_rows(page, page_size)
     max_page = max(0, (total - 1) // page_size) if total else 0
-    msg = f"⌬ <b>Referral Usage :</b>\n│\n┟ <b>Page</b> → {page + 1} / {max_page + 1}\n┠ <b>Total Success</b> → {total}"
+    msg = (
+        "⌬ <b>Referral Usage :</b>\n│\n"
+        f"┟ <b>Tab</b> → Referral Invite\n"
+        f"┠ <b>Page</b> → {page + 1} / {max_page + 1}\n"
+        f"┠ <b>Total Success</b> → {total}"
+    )
     if not rows:
         return msg + "\n┖ <b>Data</b> → No referrals yet", total
+    cache = {}
     msg += "\n┃"
     for idx, row in enumerate(rows, start=page * page_size + 1):
+        inviter = await _user_link(client, row.get("inviter_id"), cache)
+        invitee = await _user_link(client, row.get("invitee_id"), cache)
+        reward = row.get("reward", Config.REFERRAL_REWARD_QUOTA)
+        completed_at = _format_usage_time(row.get("completed_at"))
         msg += (
-            f"\n┠ <b>{idx}.</b> Inviter <code>{row['inviter_id']}</code> → "
-            f"User <code>{row['invitee_id']}</code> (+{row['reward']})"
+            f"\n┠ <b>{idx}.</b> {inviter} invited {invitee} "
+            f"+{reward} Quota - {completed_at}"
         )
     return msg, total
 
 
-def subscribe_reward_usage_text(page=0, page_size=5):
+async def subscribe_reward_usage_text(client=None, page=0, page_size=5):
     rows, total = subscribe_reward_rows(page, page_size)
     max_page = max(0, (total - 1) // page_size) if total else 0
-    msg = f"⌬ <b>Subscribe Reward Usage :</b>\n│\n┟ <b>Page</b> → {page + 1} / {max_page + 1}\n┠ <b>Total Claimed</b> → {total}"
+    msg = (
+        "⌬ <b>Referral Usage :</b>\n│\n"
+        f"┟ <b>Tab</b> → Channel Reward\n"
+        f"┠ <b>Page</b> → {page + 1} / {max_page + 1}\n"
+        f"┠ <b>Total Claimed</b> → {total}"
+    )
     if not rows:
         return msg + "\n┖ <b>Data</b> → No claims yet", total
+    cache = {}
     msg += "\n┃"
     for idx, row in enumerate(rows, start=page * page_size + 1):
-        msg += f"\n┠ <b>{idx}.</b> User <code>{row['user_id']}</code> (+{row['reward']})"
+        user = await _user_link(client, row.get("user_id"), cache)
+        reward = row.get("reward", Config.REFERRAL_SUBSCRIBE_REWARD_QUOTA)
+        completed_at = _format_usage_time(row.get("completed_at"))
+        msg += f"\n┠ <b>{idx}.</b> {user} claimed reward +{reward} Quota - {completed_at}"
     return msg, total
 
 

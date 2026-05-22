@@ -345,6 +345,7 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
         buttons.data_button("Subscribe Quota", "botset referraledit REFERRAL_SUBSCRIBE_REWARD_QUOTA")
         buttons.data_button("Group Chat Link", "botset referraledit REFERRAL_REQUIRED_CHAT_LINK")
         buttons.data_button("Channel Link", "botset referraledit REFERRAL_SUBSCRIBE_CHANNEL_LINK")
+        buttons.data_button("Usage", "botset referralusage referral 0")
         buttons.data_button("Back", "botset back")
         buttons.data_button("Close", "botset close")
         msg = referral_settings_text()
@@ -537,6 +538,32 @@ async def edit_referral_value(_, message, pre_message, key):
     await database.update_config({key: value})
     await delete_message(message)
     await update_buttons(pre_message, "referral")
+
+
+async def show_referral_usage_menu(client, message, usage_type="referral", page=0):
+    usage_type = "channel" if usage_type in ("channel", "subscribe") else "referral"
+    page = max(0, int(page or 0))
+    if usage_type == "channel":
+        text, total = await subscribe_reward_usage_text(client, page)
+    else:
+        text, total = await referral_usage_text(client, page)
+
+    buttons = ButtonMaker()
+    buttons.data_button(
+        "• Referral Invite •" if usage_type == "referral" else "Referral Invite",
+        "botset referralusage referral 0",
+    )
+    buttons.data_button(
+        "• Channel Reward •" if usage_type == "channel" else "Channel Reward",
+        "botset referralusage channel 0",
+    )
+    if page > 0:
+        buttons.data_button("Prev", f"botset referralusage {usage_type} {page - 1}")
+    if total > (page + 1) * 5:
+        buttons.data_button("Next", f"botset referralusage {usage_type} {page + 1}")
+    buttons.data_button("Back", "botset referral")
+    buttons.data_button("Close", "botset close")
+    await edit_message(message, text, buttons.build_menu(2))
 
 
 @new_task
@@ -1229,28 +1256,17 @@ async def edit_bot_settings(client, query):
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "referralusage":
         await query.answer()
-        page = max(0, int(data[2]))
-        text, total = referral_usage_text(page)
-        buttons = ButtonMaker()
-        if page > 0:
-            buttons.data_button("Prev", f"botset referralusage {page - 1}")
-        if total > (page + 1) * 5:
-            buttons.data_button("Next", f"botset referralusage {page + 1}")
-        buttons.data_button("Back", "botset referral")
-        buttons.data_button("Close", "botset close")
-        await edit_message(message, text, buttons.build_menu(2))
+        if len(data) > 3:
+            usage_type = data[2]
+            page = data[3]
+        else:
+            usage_type = "referral"
+            page = data[2]
+        await show_referral_usage_menu(client, message, usage_type, page)
     elif data[1] == "subscribeusage":
         await query.answer()
         page = max(0, int(data[2]))
-        text, total = subscribe_reward_usage_text(page)
-        buttons = ButtonMaker()
-        if page > 0:
-            buttons.data_button("Prev", f"botset subscribeusage {page - 1}")
-        if total > (page + 1) * 5:
-            buttons.data_button("Next", f"botset subscribeusage {page + 1}")
-        buttons.data_button("Back", "botset referral")
-        buttons.data_button("Close", "botset close")
-        await edit_message(message, text, buttons.build_menu(2))
+        await show_referral_usage_menu(client, message, "channel", page)
     elif data[1] == "quotaaction":
         await query.answer()
         action = data[2]

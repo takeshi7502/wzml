@@ -20,6 +20,7 @@ async def resolve_pikpak_link(listener, link, timeout=180):
         if not getattr(listener, "name", ""):
             listener.name = download.get("name", "")
         listener.source_url = link
+        listener.pikpak_cleanup_ids = download.get("cleanup_ids", []) or []
         await edit_message(status_msg, "PikPak: direct link generated, starting download...")
         return download
     finally:

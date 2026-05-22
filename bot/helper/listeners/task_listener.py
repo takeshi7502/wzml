@@ -62,6 +62,7 @@ from ..mirror_leech_utils.status_utils.telegram_status import TelegramStatus
 from ..mirror_leech_utils.status_utils.yt_status import YtStatus
 from ..mirror_leech_utils.upload_utils.telegram_uploader import TelegramUploader
 from ..mirror_leech_utils.youtube_utils.youtube_upload import YouTubeUpload
+from ..mirror_leech_utils.download_utils.pikpak_cleanup import cleanup_pikpak_restored
 from ..telegram_helper.button_build import ButtonMaker
 from ..telegram_helper.message_utils import (
     delete_message,
@@ -582,6 +583,7 @@ class TaskListener(TaskConfig):
         if self.pm_msg and (not Config.DELETE_LINKS or Config.CLEAN_LOG_MSG):
             await delete_message(self.pm_msg)
 
+        await cleanup_pikpak_restored(self)
         await clean_download(self.dir)
         async with task_dict_lock:
             if self.mid in task_dict:
@@ -599,6 +601,7 @@ class TaskListener(TaskConfig):
         await start_from_queued()
 
     async def on_download_error(self, error, button=None, is_limit=False):
+        await cleanup_pikpak_restored(self)
         await quota_release_task(self, "download_error")
         async with task_dict_lock:
             if self.mid in task_dict:
@@ -657,6 +660,7 @@ class TaskListener(TaskConfig):
             await remove(self.thumb)
 
     async def on_upload_error(self, error):
+        await cleanup_pikpak_restored(self)
         await quota_release_task(self, "upload_error")
         async with task_dict_lock:
             if self.mid in task_dict:

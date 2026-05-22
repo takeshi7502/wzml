@@ -70,6 +70,26 @@ def _pick_file_id(data):
     return data.get("file_id") or data.get("fid") or data.get("resource_id") or ""
 
 
+def _pick_reference_resource(data):
+    if not isinstance(data, dict):
+        return {}
+    candidates = [
+        data.get("reference_resource") or {},
+        data.get("task") or {},
+        data.get("task_info") or {},
+        data.get("data") or {},
+    ]
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        ref = item.get("reference_resource") or item.get("file") or item.get("resource")
+        if isinstance(ref, dict) and ref.get("id"):
+            return ref
+        if item.get("id") and (item.get("kind") or item.get("name")):
+            return item
+    return {}
+
+
 def _pick_share_items(data):
     if not isinstance(data, dict):
         return []
@@ -406,8 +426,30 @@ class PikPakClient:
                             f"url={'yes' if child_download.get('url') else 'no'}"
                         )
                     if child_download.get("url"):
+                        child_download.setdefault("parent_folder_id", file_id)
                         return child_download
         return download
+
+    async def trash_files(self, file_ids):
+        ids = [file_id for file_id in file_ids if file_id]
+        if not ids:
+            return {}
+        payloads = [
+            {"ids": ids},
+            {"file_ids": ids},
+            {"files": [{"id": file_id} for file_id in ids]},
+        ]
+        last_error = None
+        for payload in payloads:
+            try:
+                return await self._drive_post(
+                    "/drive/v1/files:batchTrash",
+                    "POST:/drive/v1/files:batchTrash",
+                    json=payload,
+                )
+            except DirectDownloadLinkException as e:
+                last_error = e
+        raise last_error
 
     async def ensure_folder(self, folder_path=DEFAULT_FOLDER):
         normalized = folder_path.strip("/")
@@ -508,16 +550,33 @@ class PikPakClient:
             params={"with": "reference_resource"},
         )
 
-    async def wait_saved_file(self, save_data, timeout=900):
+    async def wait_saved_file(self, save_data, timeout=900, metadata=False):
         file_id = _pick_file_id(save_data)
+        ref = _pick_reference_resource(save_data)
+        if ref.get("id"):
+            file_id = ref.get("id")
         if file_id:
-            return file_id
+            result = {
+                "file_id": file_id,
+                "cleanup_id": file_id,
+                "cleanup_kind": ref.get("kind", ""),
+                "resource": ref,
+                "task": save_data if isinstance(save_data, dict) else {},
+            }
+            return result if metadata else file_id
         task_id = _pick_task_id(save_data)
         if not task_id:
             direct = _first_dict(save_data.get("file") if isinstance(save_data, dict) else {})
             file_id = _pick_file_id(direct)
             if file_id:
-                return file_id
+                result = {
+                    "file_id": file_id,
+                    "cleanup_id": file_id,
+                    "cleanup_kind": direct.get("kind", ""),
+                    "resource": direct,
+                    "task": save_data if isinstance(save_data, dict) else {},
+                }
+                return result if metadata else file_id
             raise DirectDownloadLinkException(f"ERROR: PikPak save task id not found: {save_data}")
         deadline = time() + timeout
         last_task = save_data
@@ -527,9 +586,17 @@ class PikPakClient:
             if not task:
                 continue
             last_task = task
-            file_id = _pick_file_id(task)
+            ref = _pick_reference_resource(task)
+            file_id = ref.get("id") or _pick_file_id(task)
             if file_id:
-                return file_id
+                result = {
+                    "file_id": file_id,
+                    "cleanup_id": file_id,
+                    "cleanup_kind": ref.get("kind", ""),
+                    "resource": ref,
+                    "task": task,
+                }
+                return result if metadata else file_id
             status = str(task.get("status") or task.get("phase") or task.get("state") or "").lower()
             message = task.get("message") or task.get("error_description") or task.get("error") or ""
             if any(word in status for word in ("fail", "error", "cancel")):
@@ -566,10 +633,15 @@ class PikPakClient:
             debug_lines.append(
                 f"restore keys={_debug_keys(restore_data)} task={_pick_task_id(restore_data)[:12]} file={_pick_file_id(restore_data)[:12]}"
             )
-        file_id = await self.wait_saved_file(restore_data)
+        saved = await self.wait_saved_file(restore_data, metadata=True)
+        file_id = saved["file_id"]
+        cleanup_id = saved.get("cleanup_id") or file_id
         if debug_lines is not None:
-            debug_lines.append(f"restored file_id={file_id[:16]}")
+            debug_lines.append(f"restored file_id={file_id[:16]} cleanup_id={cleanup_id[:16]}")
         download = await self.get_download_from_file_or_folder(file_id, debug_lines)
+        if cleanup_id:
+            download["cleanup_ids"] = [cleanup_id]
+            download["cleanup_kind"] = saved.get("cleanup_kind", "")
         if debug and debug_lines is not None:
             download["debug"] = debug_lines
         if not download.get("url"):

@@ -53,7 +53,11 @@ from ..helper.ext_utils.user_quota_manager import (
     quota_disable_vip,
     quota_summary,
 )
-from ..helper.ext_utils.referral_manager import referral_settings_text, referral_usage_text
+from ..helper.ext_utils.referral_manager import (
+    referral_settings_text,
+    referral_usage_text,
+    subscribe_reward_usage_text,
+)
 from ..core.jdownloader_booter import jdownloader
 from ..helper.ext_utils.task_manager import start_from_queued
 from ..helper.mirror_leech_utils.rclone_utils.serve import rclone_serve_booter
@@ -315,25 +319,32 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
                 )
         msg = f"Server Keys | Page: {int(start / 10)} | State: {state}"
     elif key == "quota":
-        buttons.data_button("Toggle User Quota", "botset quotatoggle")
-        buttons.data_button("Daily Free Limit", "botset quotaedit USER_QUOTA_DAILY_LIMIT")
-        buttons.data_button("Reset Time", "botset quotaedit USER_QUOTA_RESET_HOUR")
+        quota_toggle = "Disable" if Config.USER_QUOTA_ENABLED else "Enable"
+        notify_toggle = "Disable Reset Notice" if Config.USER_QUOTA_RESET_NOTIFY else "Enable Reset Notice"
+        buttons.data_button(quota_toggle, "botset quotatoggle")
+        buttons.data_button(notify_toggle, "botset quotanotifytoggle")
+        buttons.data_button("Set Daily Free", "botset quotaedit USER_QUOTA_DAILY_LIMIT")
+        buttons.data_button("Set Reset Time", "botset quotaedit USER_QUOTA_RESET_HOUR")
         buttons.data_button("View User Usage", "botset quotaaction view")
         buttons.data_button("Back", "botset back")
         buttons.data_button("Close", "botset close")
         status = "Enabled" if Config.USER_QUOTA_ENABLED else "Disabled"
+        notify_status = "Enabled" if Config.USER_QUOTA_RESET_NOTIFY else "Disabled"
         msg = f"""⌬ <b>User Quota Settings :</b>
 │
 ┟ <b>Status</b> → {status}
+┠ <b>Reset Notice</b> → {notify_status}
 ┠ <b>Daily Free Limit</b> → {Config.USER_QUOTA_DAILY_LIMIT} / day
 ┠ <b>Reset Time</b> → {Config.USER_QUOTA_RESET_HOUR:02}:00 {Config.TIMEZONE}
 ┖ <b>Pending Timeout</b> → {round(Config.USER_QUOTA_PENDING_TIMEOUT / 3600)}h"""
     elif key == "referral":
-        buttons.data_button("Toggle Referral", "botset referraltoggle")
+        referral_toggle = "Disable" if Config.REFERRAL_ENABLED else "Enable"
+        buttons.data_button(referral_toggle, "botset referraltoggle")
         buttons.data_button("Reward Quota", "botset referraledit REFERRAL_REWARD_QUOTA")
-        buttons.data_button("Required Chat ID", "botset referraledit REFERRAL_REQUIRED_CHAT_ID")
-        buttons.data_button("Required Chat Link", "botset referraledit REFERRAL_REQUIRED_CHAT_LINK")
-        buttons.data_button("Usage", "botset referralusage 0")
+        buttons.data_button("Group Chat ID", "botset referraledit REFERRAL_REQUIRED_CHAT_ID")
+        buttons.data_button("Subscribe Quota", "botset referraledit REFERRAL_SUBSCRIBE_REWARD_QUOTA")
+        buttons.data_button("Group Chat Link", "botset referraledit REFERRAL_REQUIRED_CHAT_LINK")
+        buttons.data_button("Channel Link", "botset referraledit REFERRAL_SUBSCRIBE_CHANNEL_LINK")
         buttons.data_button("Back", "botset back")
         buttons.data_button("Close", "botset close")
         msg = referral_settings_text()
@@ -480,37 +491,78 @@ async def edit_quota_limit(_, message, pre_message, key):
     await database.update_config({key: value})
 
 
+async def edit_referral_prompt(message, key, note=None):
+    label = {
+        "REFERRAL_REWARD_QUOTA": "Reward Quota",
+        "REFERRAL_REQUIRED_CHAT_ID": "Group Chat ID",
+        "REFERRAL_REQUIRED_CHAT_LINK": "Group Chat Link",
+        "REFERRAL_SUBSCRIBE_REWARD_QUOTA": "Subscribe Quota",
+        "REFERRAL_SUBSCRIBE_CHANNEL_LINK": "Channel Link",
+    }.get(key, key)
+    note_line = f"\n┖ <b>Note</b> → {note}" if note else ""
+    text = f"""⌬ <b>Referral Manager :</b>
+│
+┟ <b>Edit</b> → {label}
+┠ <b>Current</b> → <code>{Config.get(key) or 'Not Set'}</code>
+┠ <b>Timeout</b> → 60 sec{note_line}"""
+    buttons = ButtonMaker()
+    buttons.data_button("Cancel", "botset referral")
+    await edit_message(message, text, buttons.build_menu(1))
+
+
 @new_task
-async def edit_referral_value(_, message, pre_message, prompt_message, key):
-    handler_dict[message.chat.id] = False
+async def edit_referral_value(_, message, pre_message, key):
     value = message.text.strip()
-    try:
-        if key in ["REFERRAL_REWARD_QUOTA", "REFERRAL_REQUIRED_CHAT_ID"]:
-            value = int(value.split()[0])
-            if key == "REFERRAL_REWARD_QUOTA":
-                value = max(0, value)
-    except Exception:
-        await delete_message(message)
-        await delete_message(prompt_message)
-        return await update_buttons(pre_message, "referral")
+    if key in ["REFERRAL_REWARD_QUOTA", "REFERRAL_SUBSCRIBE_REWARD_QUOTA"]:
+        if not value.isdigit():
+            await delete_message(message)
+            await edit_referral_prompt(pre_message, key, "Invalid value. Please send a number.")
+            return
+        value = int(value)
+    elif key == "REFERRAL_REQUIRED_CHAT_ID":
+        raw_value = value.lstrip("-")
+        if not raw_value.isdigit():
+            await delete_message(message)
+            await edit_referral_prompt(pre_message, key, "Invalid value. Please send a numeric chat ID.")
+            return
+        value = int(value)
+    else:
+        value = value.strip()
+        if not value:
+            await delete_message(message)
+            await edit_referral_prompt(pre_message, key, "Invalid value. Please send a non-empty link.")
+            return
+    handler_dict[message.chat.id] = False
     Config.set(key, value)
     await database.update_config({key: value})
     await delete_message(message)
-    await delete_message(prompt_message)
     await update_buttons(pre_message, "referral")
 
 
 @new_task
 async def edit_quota_user(client, message, pre_message, action):
-    handler_dict[message.chat.id] = False
-    try:
-        user_id = int(message.text.split()[0])
-    except Exception:
-        await edit_quota_prompt(pre_message, action, "Invalid input. Use: <code>user_id</code>")
+    raw_user_id = message.text.strip().split()[0] if message.text and message.text.strip() else ""
+    if not raw_user_id.isdigit():
         await delete_message(message)
+        await edit_quota_prompt(
+            pre_message,
+            action,
+            "Invalid user ID. Please send a numeric Telegram user ID.",
+        )
         return
 
+    user_id = int(raw_user_id)
     user = await get_quota_user(client, user_id)
+    if user is None:
+        await delete_message(message)
+        await edit_quota_prompt(
+            pre_message,
+            action,
+            "User not found. Please send a valid Telegram user ID.",
+        )
+        return
+
+    handler_dict[message.chat.id] = False
     if action == "clear":
         await quota_clear_pending(user_id)
     await show_quota_user_menu(pre_message, user_id, user)
@@ -1149,6 +1201,11 @@ async def edit_bot_settings(client, query):
         Config.USER_QUOTA_ENABLED = not Config.USER_QUOTA_ENABLED
         await database.update_config({"USER_QUOTA_ENABLED": Config.USER_QUOTA_ENABLED})
         await update_buttons(message, "quota")
+    elif data[1] == "quotanotifytoggle":
+        await query.answer()
+        Config.USER_QUOTA_RESET_NOTIFY = not Config.USER_QUOTA_RESET_NOTIFY
+        await database.update_config({"USER_QUOTA_RESET_NOTIFY": Config.USER_QUOTA_RESET_NOTIFY})
+        await update_buttons(message, "quota")
     elif data[1] == "quotaedit":
         await query.answer()
         await update_buttons(message, data[2], "quotavar")
@@ -1162,17 +1219,13 @@ async def edit_bot_settings(client, query):
         await update_buttons(message, "referral")
     elif data[1] == "referraledit":
         await query.answer()
-        prompt = await send_message(
-            message,
-            f"Send value for <code>{data[2]}</code>. Current: <code>{Config.get(data[2])}</code>. Timeout: 60 sec",
-        )
+        await edit_referral_prompt(message, data[2])
         pfunc = partial(
             edit_referral_value,
             pre_message=message,
-            prompt_message=prompt,
             key=data[2],
         )
-        rfunc = partial(delete_message, prompt)
+        rfunc = partial(update_buttons, message, "referral")
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "referralusage":
         await query.answer()
@@ -1183,6 +1236,18 @@ async def edit_bot_settings(client, query):
             buttons.data_button("Prev", f"botset referralusage {page - 1}")
         if total > (page + 1) * 5:
             buttons.data_button("Next", f"botset referralusage {page + 1}")
+        buttons.data_button("Back", "botset referral")
+        buttons.data_button("Close", "botset close")
+        await edit_message(message, text, buttons.build_menu(2))
+    elif data[1] == "subscribeusage":
+        await query.answer()
+        page = max(0, int(data[2]))
+        text, total = subscribe_reward_usage_text(page)
+        buttons = ButtonMaker()
+        if page > 0:
+            buttons.data_button("Prev", f"botset subscribeusage {page - 1}")
+        if total > (page + 1) * 5:
+            buttons.data_button("Next", f"botset subscribeusage {page + 1}")
         buttons.data_button("Back", "botset referral")
         buttons.data_button("Close", "botset close")
         await edit_message(message, text, buttons.build_menu(2))

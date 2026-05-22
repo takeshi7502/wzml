@@ -1,6 +1,13 @@
 START_MSG = """
-Fast mirror/leech bot for links, Telegram files, torrents, NZB and cloud uploads.
-Go to Groups to join a group and use the bot.
+<b>⌬ Welcome, new friends!</b>
+│
+┟ <b>Fast mirror/leech bot for direct links, Tg files, torrents.</b>
+┠ <b>Join the Groups to use the bot for free.</b>
+┖ <i><b>{reward_line}</b></i>
 """
-START_BUTTON1 = "Git Repo"
-START_BUTTON2 = "Join Mirror Chat"
+START_BUTTON1 = "Join Channel"
+START_BUTTON2 = "Join Groups"
+START_CLAIM_REWARD = "Claim Reward"
+START_CLAIMED_REWARD = "Claimed Reward"
+START_REWARD_LINE = "Join the Channel to instantly receive {quota} free quota with no expiration!"
+START_REWARD_CLAIMED_LINE = "Thanks for joining the channel, you have already claimed this reward before! Check in <code>{us_cmd}</code> now."

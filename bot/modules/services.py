@@ -16,7 +16,10 @@ from ..helper.ext_utils.status_utils import get_readable_time
 from ..helper.ext_utils.db_handler import database
 from ..helper.ext_utils.referral_manager import (
     complete_referral,
+    complete_subscribe_reward,
     referral_notify_inviter,
+    subscribe_reward_claimed,
+    subscribe_reward_enabled,
     set_pending_referral,
 )
 from ..helper.languages import Language
@@ -32,16 +35,34 @@ from ..helper.telegram_helper.message_utils import (
 )
 
 
+def _start_reward_line(lang, user_id):
+    if subscribe_reward_claimed(user_id):
+        us_cmd = f"/{BotCommands.UserSetCommand[1] if isinstance(BotCommands.UserSetCommand, list) else BotCommands.UserSetCommand}"
+        return lang.START_REWARD_CLAIMED_LINE.format(us_cmd=us_cmd)
+    return lang.START_REWARD_LINE.format(quota=Config.REFERRAL_SUBSCRIBE_REWARD_QUOTA)
+
+
+def _start_buttons(lang, user_id, state="join"):
+    buttons = ButtonMaker()
+    if subscribe_reward_enabled() and Config.REFERRAL_SUBSCRIBE_CHANNEL_LINK:
+        if state == "claim":
+            buttons.url_button(lang.START_BUTTON1, Config.REFERRAL_SUBSCRIBE_CHANNEL_LINK)
+            buttons.data_button(lang.START_CLAIM_REWARD, "start subscribe_claim")
+        elif state == "claimed":
+            buttons.data_button(lang.START_CLAIMED_REWARD, "start subscribe_claimed")
+        else:
+            buttons.data_button(lang.START_BUTTON1, "start subscribe_join")
+    else:
+        buttons.url_button(lang.START_BUTTON1, "https://t.me/takeshi_updrive")
+    buttons.url_button(lang.START_BUTTON2, "https://t.me/takeshi_updrive")
+    return buttons.build_menu(2)
+
+
 @new_task
 async def start(_, message):
     userid = message.from_user.id
     lang = Language()
-    buttons = ButtonMaker()
-    buttons.url_button(
-        lang.START_BUTTON1, "https://github.com/takeshi7502/wzml"
-    )
-    buttons.url_button(lang.START_BUTTON2, "https://t.me/takeshi_updrive")
-    reply_markup = buttons.build_menu(2)
+    reply_markup = _start_buttons(lang, userid)
 
     if len(message.command) > 1 and message.command[1] == "wzmlx":
         await delete_message(message)
@@ -109,14 +130,15 @@ async def start(_, message):
     if await CustomFilters.authorized(_, message):
         start_string = lang.START_MSG.format(
             cmd=BotCommands.HelpCommand[0],
+            reward_line=_start_reward_line(lang, userid),
         )
         await send_message(message, start_string, reply_markup)
     elif Config.BOT_PM:
-        await send_message(
-            message,
-            "<i>Now, Bot will send you all your files and links here. Start Using Now...</i>",
-            reply_markup,
+        start_string = lang.START_MSG.format(
+            cmd=BotCommands.HelpCommand[0],
+            reward_line=_start_reward_line(lang, userid),
         )
+        await send_message(message, start_string, reply_markup)
     else:
         await send_message(
             message,
@@ -145,6 +167,34 @@ async def start_cb(_, query):
             "⌬ <b>Verified :</b>\n┃\n┠ <b>Mirror Chat</b> → Joined\n┖ <b>Thanks for joining!</b>",
             buttons.build_menu(1),
         )
+    if input_token == "subscribe_join":
+        lang = Language()
+        if subscribe_reward_claimed(user_id):
+            await query.answer("You have already claimed this reward.", show_alert=True)
+            text = lang.START_MSG.format(
+                cmd=BotCommands.HelpCommand[0],
+                reward_line=_start_reward_line(lang, user_id),
+            )
+            return await edit_message(query.message, text, _start_buttons(lang, user_id))
+        await query.answer("Join the channel, then claim your reward.", show_alert=True)
+        text = lang.START_MSG.format(
+            cmd=BotCommands.HelpCommand[0],
+            reward_line=lang.START_REWARD_LINE.format(quota=Config.REFERRAL_SUBSCRIBE_REWARD_QUOTA),
+        )
+        return await edit_message(query.message, text, _start_buttons(lang, user_id, "claim"))
+    if input_token == "subscribe_claim":
+        lang = Language()
+        ok, result = await complete_subscribe_reward(_, user_id)
+        if not ok:
+            return await query.answer(result, show_alert=True)
+        await query.answer(f"Reward claimed! +{result} Extra Quota", show_alert=True)
+        text = lang.START_MSG.format(
+            cmd=BotCommands.HelpCommand[0],
+            reward_line=_start_reward_line(lang, user_id),
+        )
+        return await edit_message(query.message, text, _start_buttons(lang, user_id, "claimed"))
+    if input_token == "subscribe_claimed":
+        return await query.answer("You have already claimed this reward.", show_alert=True)
     data = user_data.get(user_id, {})
 
     if input_token == "activated":

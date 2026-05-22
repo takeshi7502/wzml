@@ -59,6 +59,7 @@ async def main():
     )
     from .core.jdownloader_booter import jdownloader
     from .helper.ext_utils.files_utils import clean_all
+    from .helper.ext_utils.quota_reset_notifier import start_quota_reset_notifier
     from .helper.ext_utils.telegraph_helper import telegraph
     from .helper.mirror_leech_utils.rclone_utils.serve import rclone_serve_booter
     from .modules import (
@@ -77,6 +78,7 @@ async def main():
         telegraph.create_account(),
         rclone_serve_booter(),
     )
+    start_quota_reset_notifier()
 
 
 bot_loop.run_until_complete(main())

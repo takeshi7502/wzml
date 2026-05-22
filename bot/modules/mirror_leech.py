@@ -1,4 +1,5 @@
 from base64 import b64encode
+from secrets import token_hex
 from re import match as re_match
 
 from aiofiles.os import path as aiopath
@@ -376,7 +377,36 @@ class Mirror(TaskListener):
         if original_pikpak_link:
             try:
                 download = await resolve_pikpak_link(self, original_pikpak_link)
-                self.link = download["url"]
+                if isinstance(download, list):
+                    downloads = [item for item in download if item.get("url")]
+                    if not downloads:
+                        raise DirectDownloadLinkException(
+                            "ERROR: PikPak did not return any downloadable file for this folder."
+                        )
+                    folder_name = downloads[0].get("folder_name") or "PikPak Folder"
+                    folder_suffix = folder_name.strip("/")
+                    if folder_suffix and not self.folder_name:
+                        self.folder_name = f"/{folder_suffix}"
+                    if len(downloads) > 1 and not self.multi_tag:
+                        self.multi_tag = token_hex(3)
+                    if len(downloads) > 1:
+                        self.multi = len(downloads)
+                        self.bulk = [item["url"] for item in downloads[1:]]
+                        if self.folder_name:
+                            async with task_dict_lock:
+                                self.same_dir = {
+                                    self.folder_name: {
+                                        "total": self.multi,
+                                        "tasks": {self.mid},
+                                    }
+                                }
+                        self.options = f"-m {folder_name}"
+                        await self.run_multi(input_list, Mirror)
+                    self.link = downloads[0]["url"]
+                    self.name = downloads[0].get("name", self.name)
+                    self.pikpak_cleanup_ids = downloads[0].get("cleanup_ids", []) or []
+                else:
+                    self.link = download["url"]
             except Exception as e:
                 await set_message_reaction(self.message, "❌")
                 await send_message(self.message, f"PikPak error: {e}")

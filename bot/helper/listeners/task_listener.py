@@ -192,9 +192,17 @@ class TaskListener(TaskConfig):
         if not await aiopath.exists(f"{self.dir}/{self.name}"):
             try:
                 files = await listdir(self.dir)
-                self.name = files[-1]
-                if self.name == "yt-dlp-thumb":
-                    self.name = files[0]
+                valid_files = [
+                    file
+                    for file in files
+                    if file != "yt-dlp-thumb"
+                    and not file.strip().endswith((".aria2", ".!qB"))
+                ]
+                if not valid_files:
+                    raise FileNotFoundError(
+                        f"No completed download found in: {self.dir}"
+                    )
+                self.name = valid_files[-1]
             except Exception as e:
                 await self.on_upload_error(str(e))
                 return

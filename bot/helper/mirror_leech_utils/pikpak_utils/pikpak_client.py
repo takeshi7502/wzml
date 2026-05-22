@@ -208,6 +208,14 @@ class PikPakClient:
             async with session.request(method, url, **kwargs) as resp:
                 text = await resp.text()
                 if resp.status >= 400:
+                    if "invalid_grant" in text or "invalid refresh token" in text.lower():
+                        owner = f'<a href="tg://user?id={Config.OWNER_ID}">OWNER</a>'
+                        raise DirectDownloadLinkException(
+                            "ERROR: PikPak refresh token is invalid or expired.\n"
+                            f"┠ <b>Owner</b> → {owner}\n"
+                            "┠ <b>Action</b> → Update <code>PIKPAK_REFRESH_TOKEN</code> in Bot Settings.\n"
+                            "┖ <b>Note</b> → The old refresh token may have been refreshed by another process."
+                        )
                     raise DirectDownloadLinkException(
                         f"ERROR: PikPak API {resp.status}: {text[:500]}"
                     )
@@ -417,17 +425,31 @@ class PikPakClient:
                 debug.append(f"folder children: count={len(children)}")
                 for child in children[:5]:
                     debug.append(f"child: {_debug_item(child)}")
+            downloads = []
             for child in children:
-                if isinstance(child, dict) and child.get("kind") != "drive#folder" and child.get("id"):
-                    child_download = await self.get_download_url(child.get("id"))
-                    if debug is not None:
-                        debug.append(
-                            f"child detail: id={child.get('id','')[:12]} kind={child_download.get('kind')} "
-                            f"url={'yes' if child_download.get('url') else 'no'}"
-                        )
-                    if child_download.get("url"):
-                        child_download.setdefault("parent_folder_id", file_id)
-                        return child_download
+                if not isinstance(child, dict) or not child.get("id"):
+                    continue
+                if child.get("kind") == "drive#folder":
+                    nested = await self.get_download_from_file_or_folder(child.get("id"), debug)
+                    if isinstance(nested, list):
+                        downloads.extend(nested)
+                    elif nested.get("url"):
+                        downloads.append(nested)
+                    continue
+                child_download = await self.get_download_url(child.get("id"))
+                if debug is not None:
+                    debug.append(
+                        f"child detail: id={child.get('id','')[:12]} kind={child_download.get('kind')} "
+                        f"url={'yes' if child_download.get('url') else 'no'}"
+                    )
+                if child_download.get("url"):
+                    child_download.setdefault("parent_folder_id", file_id)
+                    downloads.append(child_download)
+            if downloads:
+                folder_name = download.get("name") or "PikPak Folder"
+                for item in downloads:
+                    item.setdefault("folder_name", folder_name)
+                return downloads
         return download
 
     async def trash_files(self, file_ids):
@@ -640,11 +662,18 @@ class PikPakClient:
             debug_lines.append(f"restored file_id={file_id[:16]} cleanup_id={cleanup_id[:16]}")
         download = await self.get_download_from_file_or_folder(file_id, debug_lines)
         if cleanup_id:
-            download["cleanup_ids"] = [cleanup_id]
-            download["cleanup_kind"] = saved.get("cleanup_kind", "")
+            targets = download if isinstance(download, list) else [download]
+            for index, item in enumerate(targets):
+                item["cleanup_ids"] = [cleanup_id] if index == 0 else []
+                item["cleanup_kind"] = saved.get("cleanup_kind", "")
         if debug and debug_lines is not None:
-            download["debug"] = debug_lines
-        if not download.get("url"):
+            if isinstance(download, list):
+                for item in download:
+                    item["debug"] = debug_lines
+            else:
+                download["debug"] = debug_lines
+        has_download = any(item.get("url") for item in download) if isinstance(download, list) else download.get("url")
+        if not has_download:
             detail = ""
             if debug_lines:
                 detail = "\nDebug:\n" + "\n".join(debug_lines[-12:])

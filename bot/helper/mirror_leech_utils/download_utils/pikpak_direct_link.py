@@ -10,17 +10,19 @@ async def resolve_pikpak_link(listener, link, timeout=180):
 
     status_msg = await send_message(
         listener.message,
-        "PikPak: restoring shared file to drive...",
+        "PikPak: restoring shared file/folder to drive...",
     )
     try:
         pikpak = PikPakClient()
         download = await wait_for(pikpak.save_share_and_get_download(link), timeout=timeout)
-        if not download.get("url"):
+        downloads = download if isinstance(download, list) else [download]
+        if not any(item.get("url") for item in downloads):
             raise ValueError("PikPak did not return a download URL for this share.")
+        first = next((item for item in downloads if item.get("url")), downloads[0])
         if not getattr(listener, "name", ""):
-            listener.name = download.get("name", "")
+            listener.name = first.get("name", "")
         listener.source_url = link
-        listener.pikpak_cleanup_ids = download.get("cleanup_ids", []) or []
+        listener.pikpak_cleanup_ids = first.get("cleanup_ids", []) or []
         await edit_message(status_msg, "PikPak: direct link generated, starting download...")
         return download
     finally:

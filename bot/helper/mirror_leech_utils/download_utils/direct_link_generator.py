@@ -8,7 +8,7 @@ from re import findall, match, search
 from requests import Session, post, get, RequestException
 from requests.adapters import HTTPAdapter
 from time import sleep, time
-from urllib.parse import parse_qs, urlparse, quote, unquote
+from urllib.parse import parse_qs, urlparse, unquote
 from urllib3.util.retry import Retry
 from uuid import uuid4
 from base64 import b64decode, b64encode
@@ -260,21 +260,40 @@ def direct_link_generator(link):
         x in domain
         for x in [
             "terabox.com",
+            "www.terabox.com",
             "nephobox.com",
+            "www.nephobox.com",
             "4funbox.com",
+            "www.4funbox.com",
             "mirrobox.com",
+            "www.mirrobox.com",
             "momerybox.com",
+            "www.momerybox.com",
             "teraboxapp.com",
+            "www.teraboxapp.com",
             "1024tera.com",
-            "terabox.app",
-            "gibibox.com",
-            "goaibox.com",
-            "terasharelink.com",
-            "teraboxlink.com",
-            "freeterabox.com",
+            "www.1024tera.com",
+            "dm.1024tera.com",
             "1024terabox.com",
+            "www.1024terabox.com",
+            "terabox.app",
+            "www.terabox.app",
+            "gibibox.com",
+            "www.gibibox.com",
+            "goaibox.com",
+            "www.goaibox.com",
+            "terasharelink.com",
+            "www.terasharelink.com",
+            "teraboxlink.com",
+            "www.teraboxlink.com",
+            "freeterabox.com",
+            "www.freeterabox.com",
             "teraboxshare.com",
+            "www.teraboxshare.com",
             "terafileshare.com",
+            "www.terafileshare.com",
+            "terasharefile.com",
+            "www.terasharefile.com",
         ]
     ):
         return terabox(link)
@@ -866,13 +885,309 @@ def uploadee(url):
         raise DirectDownloadLinkException("ERROR: Direct Link not found")
 
 
+def _normalize_terabox_url(url):
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    surl = query.get("surl", [""])[0].strip()
+
+    if surl:
+        if not surl.startswith("1"):
+            surl = f"1{surl}"
+        return f"https://1024terabox.com/s/{surl}"
+
+    if "/s/" in parsed.path:
+        share_code = parsed.path.split("/s/", 1)[1].split("/", 1)[0].strip()
+        if share_code and not share_code.startswith("1"):
+            share_code = f"1{share_code}"
+        if share_code:
+            return f"https://1024terabox.com/s/{share_code}"
+
+    return url
+
+
+def _parse_terabox_cookie():
+    raw_cookie = (Config.TERABOX_COOKIE or "").strip()
+    if not raw_cookie:
+        return {}
+
+    if raw_cookie.startswith("{") and raw_cookie.endswith("}"):
+        try:
+            data = loads(raw_cookie)
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if v}
+        except Exception:
+            pass
+
+    cookies = {}
+    for part in raw_cookie.split(";"):
+        if "=" in part:
+            key, value = part.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                cookies[key] = value
+
+    if not cookies and raw_cookie:
+        cookies["ndus"] = raw_cookie
+    return cookies
+
+
+def _terabox_local_headers():
+    return {
+        "User-Agent": user_agent,
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "Referer": "https://1024terabox.com/",
+    }
+
+
+def _terabox_extract_items(payload):
+    items = payload
+    if isinstance(payload, dict):
+        for key in ("files", "items", "list", "data", "result", "contents"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                items = value
+                break
+        else:
+            if any(payload.get(key) for key in ("direct_link", "download_link", "link", "dlink")):
+                items = [payload]
+    return items if isinstance(items, list) else []
+
+
+def _terabox_build_result(items):
+    contents = []
+    total_size = 0
+    terabox_headers = (
+        f"User-Agent: {user_agent}\r\n"
+        "Referer: https://1024terabox.com/\r\n"
+        "Accept: */*"
+    )
+
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        direct_url = (
+            item.get("direct_link")
+            or item.get("download_link")
+            or item.get("link")
+            or item.get("dlink")
+            or item.get("url")
+        )
+        if not direct_url:
+            continue
+        filename = (
+            item.get("filename")
+            or item.get("server_filename")
+            or item.get("name")
+            or f"Terabox File {index}"
+        )
+        size = item.get("size_bytes") or item.get("size") or 0
+        try:
+            total_size += int(size)
+        except (TypeError, ValueError):
+            pass
+        contents.append(
+            {
+                "path": "Terabox",
+                "filename": filename,
+                "url": direct_url,
+                "headers": terabox_headers,
+            }
+        )
+
+    if not contents:
+        raise DirectDownloadLinkException("ERROR: Terabox resolver did not return a direct link")
+    if len(contents) == 1:
+        return contents[0]["url"], contents[0]["headers"]
+    return {"contents": contents, "title": "Terabox", "total_size": total_size}
+
+
+def _terabox_resolve_api(normalized_url):
+    api_key = (Config.TERABOX_API_KEY or "").strip()
+    if not api_key:
+        raise DirectDownloadLinkException("ERROR: TERABOX_API_KEY is empty")
+
+    response = post(
+        "https://xapiverse.com/api/terabox-pro",
+        json={"url": normalized_url},
+        headers={
+            "Content-Type": "application/json",
+            "xAPIverse-Key": api_key,
+            "User-Agent": user_agent,
+        },
+        timeout=60,
+    )
+    try:
+        payload = response.json()
+    except Exception as e:
+        raise DirectDownloadLinkException(
+            f"ERROR: xAPIverse Terabox API returned invalid response ({response.status_code})"
+        ) from e
+
+    if response.status_code != 200:
+        message = payload.get("message") or payload.get("error") or response.reason
+        raise DirectDownloadLinkException(
+            f"ERROR: xAPIverse Terabox API failed ({response.status_code}): {message}"
+        )
+
+    if isinstance(payload, dict) and payload.get("status") not in (None, "success", True):
+        raise DirectDownloadLinkException(
+            f"ERROR: xAPIverse Terabox API failed: {payload.get('message') or payload.get('error') or payload.get('status')}"
+        )
+
+    items = _terabox_extract_items(payload)
+    if not items:
+        raise DirectDownloadLinkException("ERROR: xAPIverse Terabox API returned no downloadable files")
+
+    direct_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("is_dir", item.get("isdir", "0"))) == "1":
+            continue
+        direct_url = (
+            item.get("normal_dlink")
+            or item.get("zip_dlink")
+            or item.get("download_link")
+            or item.get("direct_link")
+            or item.get("dlink")
+            or item.get("url")
+        )
+        if not direct_url:
+            continue
+        direct_items.append(
+            {
+                "direct_link": direct_url,
+                "filename": item.get("name") or item.get("filename") or item.get("server_filename"),
+                "size_bytes": item.get("size") or item.get("size_bytes") or 0,
+            }
+        )
+
+    if not direct_items and isinstance(payload, dict) and payload.get("folder_zip_dlink"):
+        direct_items.append(
+            {
+                "direct_link": payload["folder_zip_dlink"],
+                "filename": "Terabox Folder.zip",
+                "size_bytes": 0,
+            }
+        )
+
+    for direct_item in direct_items:
+        direct_url = direct_item["direct_link"]
+        try:
+            probe = get(
+                direct_url,
+                headers={"User-Agent": user_agent, "Referer": "https://xapiverse.com/"},
+                stream=True,
+                timeout=20,
+            )
+            content_type = probe.headers.get("Content-Type", "").lower()
+            content_length = int(probe.headers.get("Content-Length") or 0)
+            first_chunk = next(probe.iter_content(256), b"")
+            probe.close()
+            if "application/json" in content_type or (
+                content_length and content_length < 1024 and b"errno" in first_chunk
+            ):
+                raise DirectDownloadLinkException(
+                    f"ERROR: xAPIverse returned a verification/error response instead of file data: {first_chunk[:160]!r}"
+                )
+        except DirectDownloadLinkException:
+            raise
+        except Exception as e:
+            raise DirectDownloadLinkException(
+                f"ERROR: Could not validate xAPIverse Terabox direct link: {e}"
+            ) from e
+
+    return _terabox_build_result(direct_items)
+
+
+def _terabox_resolve_local(normalized_url):
+    cookies = _parse_terabox_cookie()
+    if not cookies:
+        raise DirectDownloadLinkException("TERABOX_COOKIE is empty")
+
+    parsed_url = urlparse(normalized_url)
+    if "/s/" not in parsed_url.path:
+        raise DirectDownloadLinkException("Invalid Terabox share URL")
+    surl = parsed_url.path.split("/s/", 1)[1].split("/", 1)[0].strip()
+    if surl.startswith("1"):
+        surl = surl[1:]
+
+    proxy_url = "https://tbx-proxy.shakir-ansarii075.workers.dev/"
+    params = {"mode": "resolve", "surl": surl, "raw": "1"}
+    session = Session()
+    session.cookies.update(cookies)
+    response = session.get(proxy_url, params=params, headers=_terabox_local_headers(), timeout=30)
+    try:
+        payload = response.json()
+    except Exception as e:
+        raise DirectDownloadLinkException(
+            f"ERROR: Terabox local resolver returned invalid response ({response.status_code})"
+        ) from e
+
+    if response.status_code != 200:
+        message = payload.get("error") or payload.get("message") or response.reason
+        raise DirectDownloadLinkException(
+            f"ERROR: Terabox local resolver failed ({response.status_code}): {message}"
+        )
+
+    if "upstream" in payload:
+        payload = payload["upstream"]
+    elif "data" in payload and isinstance(payload["data"], dict):
+        payload = payload["data"]
+
+    if isinstance(payload, dict) and payload.get("errno") not in (None, 0):
+        raise DirectDownloadLinkException(
+            f"ERROR: Terabox local resolver failed: {payload.get('errmsg') or payload.get('error') or payload.get('errno')}"
+        )
+
+    items = _terabox_extract_items(payload)
+    if not items:
+        raise DirectDownloadLinkException("ERROR: Terabox local resolver returned no downloadable files")
+
+    direct_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        dlink = item.get("dlink") or item.get("download_link") or item.get("direct_link")
+        if item.get("isdir") == "1" or item.get("is_directory") is True:
+            continue
+        direct_url = dlink
+        if dlink:
+            try:
+                head = session.head(dlink, headers=_terabox_local_headers(), allow_redirects=False, timeout=20)
+                direct_url = head.headers.get("Location") or dlink
+            except Exception:
+                direct_url = dlink
+        if direct_url:
+            direct_items.append(
+                {
+                    "direct_link": direct_url,
+                    "filename": item.get("server_filename") or item.get("filename") or item.get("name"),
+                    "size_bytes": item.get("size") or item.get("size_bytes") or 0,
+                }
+            )
+
+    return _terabox_build_result(direct_items)
+
+
 def terabox(url):
     try:
-        encoded_url = quote(url)
-        final_url = f"https://teradlrobot.cheemsbackup.workers.dev/?url={encoded_url}"
-        return final_url
+        normalized_url = _normalize_terabox_url(url)
+        if Config.TERABOX_API:
+            return _terabox_resolve_api(normalized_url)
+        if not (Config.TERABOX_COOKIE or "").strip():
+            raise DirectDownloadLinkException(
+                "ERROR: TERABOX_COOKIE is required when TERABOX_API is disabled. "
+                "Paste your ndus value/full cookie string into TERABOX_COOKIE or enable TERABOX_API."
+            )
+        return _terabox_resolve_local(normalized_url)
+    except DirectDownloadLinkException:
+        raise
     except Exception as e:
-        raise DirectDownloadLinkException("Failed to bypass Terabox URL")
+        raise DirectDownloadLinkException(f"Failed to bypass Terabox URL: {e}") from e
 
 
 def filepress(url):

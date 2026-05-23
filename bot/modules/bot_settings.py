@@ -57,6 +57,7 @@ from ..helper.ext_utils.referral_manager import (
     referral_settings_text,
     referral_usage_text,
     subscribe_reward_usage_text,
+    validate_public_tme_link,
 )
 from ..core.jdownloader_booter import jdownloader
 from ..helper.ext_utils.task_manager import start_from_queued
@@ -338,13 +339,15 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
 ┠ <b>Reset Time</b> → {Config.USER_QUOTA_RESET_HOUR:02}:00 {Config.TIMEZONE}
 ┖ <b>Pending Timeout</b> → {round(Config.USER_QUOTA_PENDING_TIMEOUT / 3600)}h"""
     elif key == "referral":
-        referral_toggle = "Disable" if Config.REFERRAL_ENABLED else "Enable"
+        referral_toggle = "Disable Invite" if Config.REFERRAL_ENABLED else "Enable Invite"
+        subscribe_toggle = "Disable Subscribe" if Config.REFERRAL_SUBSCRIBE_ENABLED else "Enable Subscribe"
         buttons.data_button(referral_toggle, "botset referraltoggle")
+        buttons.data_button(subscribe_toggle, "botset subscribetoggle")
         buttons.data_button("Reward Quota", "botset referraledit REFERRAL_REWARD_QUOTA")
-        buttons.data_button("Group Chat ID", "botset referraledit REFERRAL_REQUIRED_CHAT_ID")
         buttons.data_button("Subscribe Quota", "botset referraledit REFERRAL_SUBSCRIBE_REWARD_QUOTA")
-        buttons.data_button("Group Chat Link", "botset referraledit REFERRAL_REQUIRED_CHAT_LINK")
+        buttons.data_button("Group Chat ID", "botset referraledit REFERRAL_REQUIRED_CHAT_ID")
         buttons.data_button("Channel Link", "botset referraledit REFERRAL_SUBSCRIBE_CHANNEL_LINK")
+        buttons.data_button("Group Chat Link", "botset referraledit REFERRAL_REQUIRED_CHAT_LINK")
         buttons.data_button("Usage", "botset referralusage referral 0")
         buttons.data_button("Back", "botset back")
         buttons.data_button("Close", "botset close")
@@ -443,7 +446,7 @@ async def edit_variable(_, message, pre_message, key):
             sudo_users.append(int(id_.strip()))
     elif key == "LOGIN_PASS":
         value = str(value)
-    elif key == "DEBRID_LINK_API":
+    elif key in ["DEBRID_LINK_API", "TERABOX_COOKIE", "TERABOX_API_KEY"]:
         value = str(value)
     elif value.isdigit():
         value = int(value)
@@ -533,6 +536,12 @@ async def edit_referral_value(_, message, pre_message, key):
             await delete_message(message)
             await edit_referral_prompt(pre_message, key, "Invalid value. Please send a non-empty link.")
             return
+        if key in ["REFERRAL_REQUIRED_CHAT_LINK", "REFERRAL_SUBSCRIBE_CHANNEL_LINK"]:
+            ok, note = await validate_public_tme_link(_, value)
+            if not ok:
+                await delete_message(message)
+                await edit_referral_prompt(pre_message, key, note)
+                return
     handler_dict[message.chat.id] = False
     Config.set(key, value)
     await database.update_config({key: value})
@@ -1243,6 +1252,11 @@ async def edit_bot_settings(client, query):
         await query.answer()
         Config.REFERRAL_ENABLED = not Config.REFERRAL_ENABLED
         await database.update_config({"REFERRAL_ENABLED": Config.REFERRAL_ENABLED})
+        await update_buttons(message, "referral")
+    elif data[1] == "subscribetoggle":
+        await query.answer()
+        Config.REFERRAL_SUBSCRIBE_ENABLED = not Config.REFERRAL_SUBSCRIBE_ENABLED
+        await database.update_config({"REFERRAL_SUBSCRIBE_ENABLED": Config.REFERRAL_SUBSCRIBE_ENABLED})
         await update_buttons(message, "referral")
     elif data[1] == "referraledit":
         await query.answer()

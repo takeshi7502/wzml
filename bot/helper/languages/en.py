@@ -3,11 +3,12 @@ START_MSG = """
 │
 ┟ <b>Fast mirror/leech bot for direct links, Tg files, torrents.</b>
 ┠ <b>Join the Groups to use the bot for free.</b>
-┖ <i><b>{reward_line}</b></i>
+┖ 🚨 <i><b>You must join the Channel to use this bot!</b></i>
 """
-START_BUTTON1 = "Join Channel"
-START_BUTTON2 = "Join Groups"
-START_CLAIM_REWARD = "Claim Reward"
-START_CLAIMED_REWARD = "Claimed Reward"
+START_BUTTON1 = "📢 Join Channel"
+START_BUTTON2 = "👥 Join Groups"
+START_CLAIM_REWARD = "✅ Check Channel"
+START_CLAIMED_REWARD = "✅ Joined"
 START_REWARD_LINE = "Join the Channel to instantly receive {quota} free quota with no expiration!"
 START_REWARD_CLAIMED_LINE = "Thanks for joining the channel, you have already claimed this reward before! Check in <code>{us_cmd}</code> now."
+SUBSCRIBE_REQUIRED_MSG = "<b><i>⌬ {user}, you must join our Channel to use this bot!</i></b>"

@@ -140,6 +140,11 @@ PIKPAK_REFRESH_TOKEN = ""
 PIKPAK_DEVICE_ID = ""
 PIKPAK_PROXY = ""
 
+# Terabox account
+TERABOX_COOKIE = ""  # Paste ndus value or full cookie string here for bot-side Terabox resolving
+TERABOX_API = False  # True: use xAPIverse Terabox API; False: use TERABOX_COOKIE resolver
+TERABOX_API_KEY = ""  # xAPIverse API key for https://xapiverse.com/api/terabox-pro
+
 # Sabnzbd
 USENET_SERVERS = [
     {

@@ -10,6 +10,7 @@ test/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.agents/
 htmlcov/
 
 # Local config / secrets

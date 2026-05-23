@@ -58,7 +58,11 @@ def referral_enabled():
 
 
 def subscribe_reward_enabled():
-    return bool(Config.REFERRAL_ENABLED and Config.REFERRAL_SUBSCRIBE_CHANNEL_LINK)
+    return bool(Config.REFERRAL_SUBSCRIBE_ENABLED and Config.REFERRAL_SUBSCRIBE_CHANNEL_LINK)
+
+
+def subscribe_force_enabled():
+    return subscribe_reward_enabled()
 
 
 def subscribe_reward_claimed(user_id):
@@ -217,6 +221,27 @@ def _channel_username_from_link(link):
     return ""
 
 
+def is_valid_public_tme_link(link):
+    link = str(link or "").strip().rstrip("/")
+    if not link.startswith("https://t.me/"):
+        return False
+    username = link.rsplit("/", 1)[-1].split("?", 1)[0]
+    return bool(username and not username.startswith("+") and username.replace("_", "").isalnum())
+
+
+async def validate_public_tme_link(client, link):
+    if not is_valid_public_tme_link(link):
+        return False, "Link must be a public username link like https://t.me/channel_username"
+    chat_ref = _channel_username_from_link(link)
+    try:
+        await client.get_chat(chat_ref)
+        return True, ""
+    except Exception as e:
+        LOGGER.warning("Telegram link validation failed for %s: %s", link, e)
+        return False, "Could not find or access this Telegram chat/channel. Make sure the bot can see it."
+
+
+
 async def is_user_in_required_chat(client, user_id):
     async def _check(chat_ref):
         member = await client.get_chat_member(chat_ref, user_id)
@@ -297,6 +322,7 @@ async def complete_subscribe_reward(client, user_id):
 
 def referral_settings_text():
     status = "Enabled" if Config.REFERRAL_ENABLED else "Disabled"
+    sub_status = "Enabled" if Config.REFERRAL_SUBSCRIBE_ENABLED else "Disabled"
     return f"""⌬ <b>Referral Manager :</b>
 │
 ┟ <b>Referral Invite</b>
@@ -307,6 +333,7 @@ def referral_settings_text():
 ┃ ┖ <b>Total Success</b> → {len([1 for data in user_data.values() if data.get(REFERRAL_KEY, {}).get('status') == 'completed'])}
 ┃
 ┟ <b>Subscribe Channel Reward</b>
+┃ ┠ <b>Status</b> → {sub_status}
 ┃ ┠ <b>Subscribe Quota</b> → {Config.REFERRAL_SUBSCRIBE_REWARD_QUOTA}
 ┃ ┠ <b>Channel Link</b> → {Config.REFERRAL_SUBSCRIBE_CHANNEL_LINK or 'Not Set'}
 ┖ ┖ <b>Total Claimed</b> → {subscribe_reward_total()}"""

@@ -64,30 +64,12 @@ from ..mirror_leech_utils.upload_utils.telegram_uploader import TelegramUploader
 from ..mirror_leech_utils.youtube_utils.youtube_upload import YouTubeUpload
 from ..mirror_leech_utils.download_utils.pikpak_cleanup import cleanup_pikpak_restored
 from ..telegram_helper.button_build import ButtonMaker
-from ..telegram_helper.ui_themes import blockquote, html_escape, use_jinmups_ui
 from ..telegram_helper.message_utils import (
     delete_message,
     delete_status,
     send_message,
     update_status_message,
 )
-
-
-def _jinmups_done_base(listener, extra_lines=None):
-    details = [
-        f"● Task Size ➫ {get_readable_file_size(listener.size)}",
-        f"● Time Taken ➫ {get_readable_time(time() - listener.message.date.timestamp())}",
-        f"● In Mode ➫ {listener.mode[0]}",
-        f"● Out Mode ➫ {listener.mode[1]}",
-    ]
-    if extra_lines:
-        details.extend(extra_lines)
-    details.extend(["○", f"● Task By ➫ {listener.tag}"])
-    return f"{blockquote(html_escape(listener.name))}\n{blockquote(chr(10).join(details))}"
-
-
-def _jinmups_done_action(message):
-    return blockquote(f"♧ Action Performed :\n➭ {message}")
 
 
 class TaskListener(TaskConfig):
@@ -441,16 +423,13 @@ class TaskListener(TaskConfig):
         ):
             await database.rm_complete_task(self.message.link)
         await quota_confirm_task(self)
-        if use_jinmups_ui():
-            msg = _jinmups_done_base(self)
-        else:
-            msg = (
-                f"<b><i>{escape(self.name)}</i></b>\n│"
-                f"\n┟ <b>Task Size</b> → {get_readable_file_size(self.size)}"
-                f"\n┠ <b>Time Taken</b> → {get_readable_time(time() - self.message.date.timestamp())}"
-                f"\n┠ <b>In Mode</b> → {self.mode[0]}"
-                f"\n┠ <b>Out Mode</b> → {self.mode[1]}"
-            )
+        msg = (
+            f"<b><i>{escape(self.name)}</i></b>\n│"
+            f"\n┟ <b>Task Size</b> → {get_readable_file_size(self.size)}"
+            f"\n┠ <b>Time Taken</b> → {get_readable_time(time() - self.message.date.timestamp())}"
+            f"\n┠ <b>In Mode</b> → {self.mode[0]}"
+            f"\n┠ <b>Out Mode</b> → {self.mode[1]}"
+        )
         LOGGER.info(f"Task Done: {self.name}")
         if self.is_yt:
             buttons = ButtonMaker()
@@ -461,18 +440,14 @@ class TaskListener(TaskConfig):
                     buttons.url_button("🔗 View Playlist", link)
                 user_message = f"{self.tag}\nYour playlist ({files} videos) has been uploaded to YouTube successfully!"
             else:
-                if use_jinmups_ui():
-                    msg = _jinmups_done_base(self, ["○", "● Type ➫ Video"])
-                else:
-                    msg += "\n┖ <b>Type</b> → Video"
+                msg += "\n┖ <b>Type</b> → Video"
                 if link:
                     buttons.url_button("🔗 View Video", link)
                 user_message = (
                     f"{self.tag}\nYour video has been uploaded to YouTube successfully!"
                 )
 
-            if not use_jinmups_ui():
-                msg += f"\n\n<b>Task By: </b>{self.tag}"
+            msg += f"\n\n<b>Task By: </b>{self.tag}"
 
             button = buttons.build_menu(1) if link else None
 
@@ -482,24 +457,15 @@ class TaskListener(TaskConfig):
             await send_message(self.message, user_message, button)
 
         elif self.is_leech:
-            if use_jinmups_ui():
-                extra_lines = [f"● Total Files ➫ {folders}"]
-                if mime_type != 0:
-                    extra_lines.append(f"● Corrupted Files ➫ {mime_type}")
-                msg = _jinmups_done_base(self, extra_lines)
-            else:
-                msg += f"\n<b>Total Files: </b>{folders}"
-                if mime_type != 0:
-                    msg += f"\n┠ <b>Corrupted Files</b> → {mime_type}"
-                msg += f"\n┖ <b>Task By</b> → {self.tag}\n\n"
+            msg += f"\n<b>Total Files: </b>{folders}"
+            if mime_type != 0:
+                msg += f"\n┠ <b>Corrupted Files</b> → {mime_type}"
+            msg += f"\n┖ <b>Task By</b> → {self.tag}\n\n"
 
             if self.bot_pm:
                 pmsg = msg
-                if use_jinmups_ui():
-                    pmsg += "\n" + _jinmups_done_action("File(s) have been sent to User PM")
-                else:
-                    pmsg += "〶 <b><u>Action Performed :</u></b>\n"
-                    pmsg += "⋗ <i>File(s) have been sent to User PM</i>\n\n"
+                pmsg += "〶 <b><u>Action Performed :</u></b>\n"
+                pmsg += "⋗ <i>File(s) have been sent to User PM</i>\n\n"
                 if self.is_super_chat:
                     await send_message(self.message, pmsg)
 
@@ -507,11 +473,7 @@ class TaskListener(TaskConfig):
                 await send_message(self.message, msg)
             else:
                 log_chat = self.user_id if self.bot_pm else self.message
-                msg += (
-                    "\n" + blockquote("♧ Files List :") + "\n"
-                    if use_jinmups_ui()
-                    else "〶 <b><u>Files List :</u></b>\n"
-                )
+                msg += "〶 <b><u>Files List :</u></b>\n"
                 fmsg = ""
                 for index, (link, name) in enumerate(files.items(), start=1):
                     chat_id, msg_id = link.split("/")[-2:]
@@ -531,17 +493,10 @@ class TaskListener(TaskConfig):
                 if fmsg != "":
                     await send_message(log_chat, msg + fmsg)
         else:
-            if use_jinmups_ui():
-                extra_lines = ["○", f"● Type ➫ {mime_type}"]
-                if mime_type == "Folder":
-                    extra_lines.append(f"● SubFolders ➫ {folders}")
-                    extra_lines.append(f"● Files ➫ {files}")
-                msg = _jinmups_done_base(self, extra_lines)
-            else:
-                msg += f"\n│\n┟ <b>Type</b> → {mime_type}"
-                if mime_type == "Folder":
-                    msg += f"\n┠ <b>SubFolders</b> → {folders}"
-                    msg += f"\n┠ <b>Files</b> → {files}"
+            msg += f"\n│\n┟ <b>Type</b> → {mime_type}"
+            if mime_type == "Folder":
+                msg += f"\n┠ <b>SubFolders</b> → {folders}"
+                msg += f"\n┠ <b>Files</b> → {files}"
 
             multi_link_msg = ""
             multi_links = []
@@ -580,10 +535,7 @@ class TaskListener(TaskConfig):
                     for name, url in multi_links:
                         buttons.url_button(name, url)
                 else:
-                    if use_jinmups_ui():
-                        msg += "\n" + blockquote(f"● Path ➫ <code>{rclone_path}</code>")
-                    else:
-                        msg += f"\n\nPath: <code>{rclone_path}</code>"
+                    msg += f"\n\nPath: <code>{rclone_path}</code>"
                 if rclone_path and Config.RCLONE_SERVE_URL and not self.private_link:
                     remote, rpath = rclone_path.split(":", 1)
                     url_path = rutils.quote(f"{rpath}")
@@ -609,20 +561,13 @@ class TaskListener(TaskConfig):
                 button = buttons.build_menu(2)
             else:
                 if not multi_link_msg:
-                    if use_jinmups_ui():
-                        msg += "\n" + blockquote(f"● Path ➫ <code>{rclone_path}</code>")
-                    else:
-                        msg += f"\n┃\n┠ Path: <code>{rclone_path}</code>"
+                    msg += f"\n┃\n┠ Path: <code>{rclone_path}</code>"
                 button = None
-            if not use_jinmups_ui():
-                msg += f"\n┃\n┖ <b>Task By</b> → {self.tag}\n\n"
-            if use_jinmups_ui():
-                group_msg = msg + "\n" + _jinmups_done_action("Cloud link(s) have been sent to User PM")
-            else:
-                group_msg = (
-                    msg + "〶 <b><u>Action Performed :</u></b>\n"
-                    "⋗ <i>Cloud link(s) have been sent to User PM</i>\n\n"
-                )
+            msg += f"\n┃\n┖ <b>Task By</b> → {self.tag}\n\n"
+            group_msg = (
+                msg + "〶 <b><u>Action Performed :</u></b>\n"
+                "⋗ <i>Cloud link(s) have been sent to User PM</i>\n\n"
+            )
 
             if multi_link_msg:
                 group_msg += multi_link_msg + "\n"

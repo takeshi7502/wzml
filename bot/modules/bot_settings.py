@@ -128,7 +128,6 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
         buttons.data_button("JDownloader Sync", "botset syncjd")
         buttons.data_button("User Quota", "botset quota")
         buttons.data_button("Referral Manager", "botset referral")
-        buttons.data_button("Theme UI", "botset theme")
         buttons.data_button("Close", "botset close")
         msg = "Bot Settings:"
     elif edit_type is not None:
@@ -353,16 +352,6 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
         buttons.data_button("Back", "botset back")
         buttons.data_button("Close", "botset close")
         msg = referral_settings_text()
-    elif key == "theme":
-        current_theme = Config.TELEGRAM_UI_THEME if Config.TELEGRAM_UI_THEME in ["WZML", "JINMUPS"] else "WZML"
-        buttons.data_button(f"WZML{' ✓' if current_theme == 'WZML' else ''}", "botset theme WZML")
-        buttons.data_button(f"JINMUPS{' ✓' if current_theme == 'JINMUPS' else ''}", "botset theme JINMUPS")
-        buttons.data_button("Back", "botset back")
-        buttons.data_button("Close", "botset close")
-        msg = f"""⌬ <b>Theme UI</b>
-│
-┟ <b>Current</b> → {current_theme}
-┖ <b>Apply</b> → Runtime, no restart required"""
 
     return msg, buttons.build_menu(1 if key is None else 2)
 
@@ -1005,19 +994,6 @@ async def edit_bot_settings(client, query):
             globals()["start"] = 0
         await query.answer()
         await update_buttons(message, data[1])
-    elif data[1] == "theme":
-        await query.answer()
-        if len(data) == 2:
-            await update_buttons(message, "theme")
-            return
-        theme = data[2]
-        if theme not in ["WZML", "JINMUPS"]:
-            await query.answer("Invalid theme", show_alert=True)
-            return
-        Config.TELEGRAM_UI_THEME = theme
-        await database.update_config({"TELEGRAM_UI_THEME": theme})
-        await query.answer(f"Theme UI set to {theme}. No restart required.", show_alert=True)
-        await update_buttons(message, "theme")
     elif data[1] == "resetvar":
         await query.answer()
         value = ""

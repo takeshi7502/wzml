@@ -10,7 +10,8 @@ from ..helper.telegram_helper.message_utils import (
     delete_message,
     send_message,
 )
-from ..helper.ext_utils.help_messages import help_string
+from ..helper.ext_utils.help_messages import help_string, jinmups_help_string
+from ..helper.telegram_helper.ui_themes import use_jinmups_ui
 
 
 @new_task
@@ -18,6 +19,19 @@ async def arg_usage(_, query):
     data = query.data.split()
     message = query.message
     await query.answer()
+    if data[1] in ["user", "admin", "home"]:
+        buttons = ButtonMaker()
+        if data[1] == "home":
+            buttons.data_button("User", "help user")
+            buttons.data_button("Admin", "help admin")
+            msg = "<blockquote>♧ JINMUPS Help Menu\n➭ Select command group.</blockquote>"
+        else:
+            buttons.data_button("User", "help user")
+            buttons.data_button("Admin", "help admin")
+            buttons.data_button("Back", "help home")
+            msg = jinmups_help_string(data[1])
+        buttons.data_button("Close", "help close")
+        return await edit_message(message, msg, buttons.build_menu(2))
     if data[1] == "close":
         return await delete_message(message, message.reply_to_message)
     pg_no = int(data[3])
@@ -79,4 +93,11 @@ async def arg_usage(_, query):
 
 @new_task
 async def bot_help(_, message):
-    await send_message(message, help_string)
+    if not use_jinmups_ui():
+        return await send_message(message, help_string)
+    buttons = ButtonMaker()
+    buttons.data_button("User", "help user")
+    buttons.data_button("Admin", "help admin")
+    buttons.data_button("Close", "help close")
+    msg = "<blockquote>♧ JINMUPS Help Menu\n➭ Select command group.</blockquote>"
+    await send_message(message, msg, buttons.build_menu(2))

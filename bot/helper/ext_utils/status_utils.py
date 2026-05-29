@@ -15,6 +15,12 @@ from ... import (
 )
 from ...core.config_manager import Config
 from ..telegram_helper.button_build import ButtonMaker
+from ..telegram_helper.ui_themes import (
+    blockquote,
+    format_jinmups_progress,
+    html_escape,
+    use_jinmups_ui,
+)
 
 SIZE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"]
 
@@ -206,7 +212,118 @@ def get_progress_bar_string(pct):
     return f"[{p_str}]"
 
 
+async def get_jinmups_readable_message(sid, is_user, page_no=1, status="All", page_step=1):
+    msg = ""
+    button = None
+
+    tasks = await get_specific_tasks(status, sid if is_user else None)
+
+    STATUS_LIMIT = Config.STATUS_LIMIT
+    tasks_no = len(tasks)
+    pages = (max(tasks_no, 1) + STATUS_LIMIT - 1) // STATUS_LIMIT
+    if page_no > pages:
+        page_no = (page_no - 1) % pages + 1
+        status_dict[sid]["page_no"] = page_no
+    elif page_no < 1:
+        page_no = pages - (abs(page_no) % pages)
+        status_dict[sid]["page_no"] = page_no
+    start_position = (page_no - 1) * STATUS_LIMIT
+
+    from ..telegram_helper.bot_commands import BotCommands
+
+    for index, task in enumerate(
+        tasks[start_position : STATUS_LIMIT + start_position], start=1
+    ):
+        if status != "All":
+            tstatus = status
+        elif iscoroutinefunction(task.status):
+            tstatus = await task.status()
+        else:
+            tstatus = task.status()
+        elapsed = time() - task.listener.message.date.timestamp()
+        title = f"{index + start_position}. {html_escape(task.name())}"
+        detail = [
+            f"Task by {task.listener.message.from_user.mention(style='html')}  ( #ID{task.listener.message.from_user.id} )"
+        ]
+        if task.listener.is_super_chat:
+            detail[-1] += f" <i>[<a href='{task.listener.message.link}'>Link</a>]</i>"
+        if task.listener.subname:
+            detail.append(f"● Sub Name ➫ {html_escape(task.listener.subname)}")
+        if (
+            tstatus not in [MirrorStatus.STATUS_SEED, MirrorStatus.STATUS_QUEUEUP]
+            and task.listener.progress
+        ):
+            progress = task.progress()
+            detail.append(f"➥ {format_jinmups_progress(progress)} {progress}")
+            if hasattr(task, "status_message") and (status_message := task.status_message()):
+                detail.append(f"● Note ➫ <b><u><i>{html_escape(status_message)}</i></u></b>")
+            if task.listener.subname:
+                subsize = f" / {get_readable_file_size(task.listener.subsize)}"
+                ac = len(task.listener.files_to_proceed)
+                count = f"( {task.listener.proceed_count} / {ac or '?'} )"
+            else:
+                subsize = ""
+                count = ""
+            detail.append(f"● Processed ➫ {task.processed_bytes()}{subsize} of {task.size()}")
+            if count:
+                detail.append(f"● Count ➫ {count}")
+            detail.append(f"● Status ➫ {tstatus}")
+            detail.append(f"● Speed ➫ {task.speed()}")
+            detail.append(f"● Time ➫ {task.eta()} of {get_readable_time(elapsed + get_raw_time(task.eta()))} ( {get_readable_time(elapsed)} )")
+            if tstatus == MirrorStatus.STATUS_DOWNLOAD and (
+                task.listener.is_torrent or task.listener.is_qbit
+            ):
+                try:
+                    detail.append(f"● Seeders ➫ {task.seeders_num()} ● Leechers ➫ {task.leechers_num()}")
+                except Exception:
+                    pass
+        elif tstatus == MirrorStatus.STATUS_SEED:
+            detail.append(f"● Size ➫ {task.size()} ● Uploaded ➫ {task.uploaded_bytes()}")
+            detail.append(f"● Status ➫ {tstatus}")
+            detail.append(f"● Speed ➫ {task.seed_speed()}")
+            detail.append(f"● Ratio ➫ {task.ratio()}")
+            detail.append(f"● Time ➫ {task.seeding_time()} ( {get_readable_time(elapsed)} )")
+        else:
+            detail.append(f"● Size ➫ {task.size()}")
+        detail.append(f"● Engine ➫ {task.engine}")
+        detail.append(f"● In Mode ➫ {task.listener.mode[0]}")
+        detail.append(f"● Out Mode ➫ {task.listener.mode[1]}")
+        detail.append(f"● Stop ➫ /{BotCommands.CancelTaskCommand[1]}_{task.gid()}")
+        msg += f"{blockquote(title)}\n{blockquote(chr(10).join(detail))}\n"
+
+    if len(msg) == 0:
+        if status == "All":
+            return None, None
+        msg = blockquote(f"No Active {status} Tasks!") + "\n"
+
+    buttons = ButtonMaker()
+    if not is_user:
+        buttons.data_button("TStats", f"status {sid} ov", position="header")
+    if len(tasks) > STATUS_LIMIT:
+        msg += blockquote(f"Page ➫ {page_no}/{pages}\nTasks ➫ {tasks_no}\nStep ➫ {page_step}") + "\n"
+        buttons.data_button("<<", f"status {sid} pre", position="header")
+        buttons.data_button(">>", f"status {sid} nex", position="header")
+        if tasks_no > 30:
+            for i in [1, 2, 4, 6, 8, 10, 15]:
+                buttons.data_button(i, f"status {sid} ps {i}", position="footer")
+    if status != "All" or tasks_no > 20:
+        for label, status_value in list(STATUSES.items()):
+            if status_value != status:
+                buttons.data_button(label, f"status {sid} st {status_value}")
+    buttons.data_button("Refresh", f"status {sid} ref", position="header")
+    button = buttons.build_menu(8)
+    stats = (
+        "♤ Bot Stats\n"
+        f"● CPU ➫ {cpu_percent()}% ● F ➫ {get_readable_file_size(disk_usage(DOWNLOAD_DIR).free)} [{round(100 - disk_usage(DOWNLOAD_DIR).percent, 1)}%]\n"
+        f"● RAM ➫ {virtual_memory().percent}% ● UP ➫ {get_readable_time(time() - bot_start_time)}"
+    )
+    msg += blockquote(stats)
+    return msg, button
+
+
 async def get_readable_message(sid, is_user, page_no=1, status="All", page_step=1):
+    if use_jinmups_ui():
+        return await get_jinmups_readable_message(sid, is_user, page_no, status, page_step)
     msg = ""
     button = None
 

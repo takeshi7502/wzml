@@ -6,7 +6,7 @@ from time import time
 from aiofiles.os import path as aiopath, remove
 from aiofiles import open as aiopen
 from base64 import b64encode
-from secrets import token_hex
+from secrets import token_urlsafe
 from myjd.exception import MYJDException
 
 from .... import (
@@ -120,7 +120,7 @@ async def get_jd_download_directory():
 async def add_jd_download(listener, path):
     try:
         async with jd_listener_lock:
-            gid = token_hex(5)
+            gid = token_urlsafe(12)
             if not jdownloader.is_connected:
                 raise MYJDException(jdownloader.error)
 
@@ -157,7 +157,8 @@ async def add_jd_download(listener, path):
                         {
                             "autoExtract": False,
                             "links": listener.link,
-                            "packageName": listener.name or None,
+                            "deepDecrypt": True,
+                            "overwritePackagizerRules": listener.join,
                         }
                     ],
                 )
@@ -199,6 +200,7 @@ async def add_jd_download(listener, path):
                         LOGGER.error(error)
                         corrupted_packages.append(pack["uuid"])
                         continue
+
                     save_to = pack["saveTo"]
                     if not name:
                         if save_to.startswith(default_path):
@@ -216,6 +218,9 @@ async def add_jd_download(listener, path):
 
                     listener.size += pack.get("bytesTotal", 0)
                     online_packages.append(pack["uuid"])
+                    if not name:
+                        name = pack.get("name", "").replace("/", "").split("/")[0]
+                    save_to = pack["saveTo"]
                     if save_to.startswith(default_path):
                         save_to = trim_path(save_to)
                         await jdownloader.device.linkgrabber.set_download_directory(
@@ -224,14 +229,6 @@ async def add_jd_download(listener, path):
                         )
 
                 if online_packages:
-                    if listener.join and len(online_packages) > 1:
-                        listener.name = "Joined Packages"
-                        await jdownloader.device.linkgrabber.move_to_new_package(
-                            listener.name,
-                            f"{path}/{listener.name}",
-                            package_ids=online_packages,
-                        )
-                        continue
                     break
             else:
                 error = (

@@ -41,6 +41,7 @@ HELPER_TOKENS = ""
 # MegaAPI v4.30
 MEGA_EMAIL = ""
 MEGA_PASSWORD = ""
+DISABLE_MEGA = False
 
 # Disable Options
 DISABLE_TORRENTS = False

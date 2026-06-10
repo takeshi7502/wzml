@@ -23,6 +23,7 @@ from ..helper.ext_utils.bot_utils import (
     update_user_ldata,
 )
 from ..helper.ext_utils.db_handler import database
+from ..helper.ext_utils.mega_utils import get_mega_account_info
 from ..helper.ext_utils.media_utils import create_thumb
 from ..helper.ext_utils.user_quota_manager import quota_get_usage, quota_summary
 from ..helper.telegram_helper.filters import CustomFilters
@@ -86,6 +87,7 @@ advanced_options = [
     "USER_COOKIE_FILE",
 ]
 yt_options = ["YT_DESP", "YT_TAGS", "YT_CATEGORY_ID", "YT_PRIVACY_STATUS"]
+mega_options = ["MEGA_EMAIL", "MEGA_PASSWORD"]
 
 user_settings_text = {
     "THUMBNAIL": (
@@ -346,6 +348,16 @@ Here I will explain how to use mltb.* which is reference to files you want to wo
         "Teldrive fast-import split size.",
         "<i>Send Teldrive split size.</i> Example: <code>100mb</code>, <code>500mb</code>, <code>1gb</code>, <code>2gb</code> \n┖ <b>Time Left :</b> <code>60 sec</code>",
     ),
+    "MEGA_EMAIL": (
+        "String",
+        "Your Mega.nz account email for per-user Mega downloads & uploads.",
+        "<i>Send your Mega.nz email address.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
+    "MEGA_PASSWORD": (
+        "String",
+        "Your Mega.nz account password for per-user Mega downloads & uploads.",
+        "<i>Send your Mega.nz account password.</i> \n┖ <b>Time Left :</b> <code>60 sec</code>",
+    ),
 }
 
 
@@ -364,6 +376,7 @@ async def get_user_settings(from_user, stype="main"):
         buttons.data_button("Mirror Settings", f"userset {user_id} mirror")
         buttons.data_button("Leech Settings", f"userset {user_id} leech")
         buttons.data_button("Uphoster Settings", f"userset {user_id} uphoster")
+        buttons.data_button("Mega Tools", f"userset {user_id} mega")
         buttons.data_button("FF Media Settings", f"userset {user_id} ffset")
         buttons.data_button(
             "Mics Settings", f"userset {user_id} advanced", position="l_body"
@@ -778,6 +791,35 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Channel ID</b> → <code>{td_channel}</code>
 ┠ <b>Split Size</b> → <b>{td_split.upper()}</b>
 ┖ <b>Public Share</b> → <b>{'Enabled' if share else 'Disabled'}</b>"""
+
+    elif stype == "mega":
+        mega_email = user_dict.get("MEGA_EMAIL", "")
+        mega_password = user_dict.get("MEGA_PASSWORD", "")
+        has_creds = bool(mega_email and mega_password)
+        masked_pass = (
+            mega_password[:2] + "*" * (len(mega_password) - 4) + mega_password[-2:]
+            if len(mega_password) > 6
+            else "****"
+        ) if mega_password else ""
+
+        buttons.data_button("Mega Email", f"userset {user_id} menu MEGA_EMAIL")
+        if mega_email:
+            buttons.data_button("Mega Password", f"userset {user_id} menu MEGA_PASSWORD")
+        if has_creds:
+            buttons.data_button("Remove Account", f"userset {user_id} remove MEGA_EMAIL")
+        buttons.data_button("Back", f"userset {user_id} back", "footer")
+        buttons.data_button("Close", f"userset {user_id} close", "footer")
+        btns = buttons.build_menu(1)
+
+        email_display = mega_email or "Not Set"
+        pass_display = masked_pass if mega_password else "Not Set"
+        account_status = "✅ Configured" if has_creds else "❌ Not Configured"
+        text = f"""⌬ <b>Mega Tools :</b>
+┟ <b>Name</b> → {user_name}
+┃
+┠ <b>Mega Email</b> → <code>{email_display}</code>
+┠ <b>Mega Password</b> → <code>{pass_display}</code>
+┖ <b>Account</b> → {account_status}"""
 
     elif stype == "gofile":
         buttons.data_button("Gofile Token", f"userset {user_id} menu GOFILE_TOKEN")
@@ -1373,6 +1415,8 @@ async def get_menu(option, message, user_id):
         back_to = "ffset"
     elif option in advanced_options:
         back_to = "advanced"
+    elif option in mega_options:
+        back_to = "mega"
     else:
         back_to = "back"
     buttons.data_button("Back", f"userset {user_id} {back_to}", "footer")
@@ -1501,9 +1545,17 @@ async def edit_user_settings(client, query):
         "referral",
         "gdrive",
         "rclone",
+        "mega",
     ]:
         await query.answer()
         await update_user_settings(query, data[2])
+        if data[2] == "mega":
+            mega_email = user_dict.get("MEGA_EMAIL", "")
+            mega_password = user_dict.get("MEGA_PASSWORD", "")
+            if mega_email and mega_password:
+                msg, button = await get_user_settings(query.from_user, "mega")
+                info_text = await get_mega_account_info(mega_email, mega_password)
+                await edit_message(message, f"{msg}\n\n{info_text}", button)
     elif data[2] == "yttools":
         await query.answer()
         await update_user_settings(query, data[2])
@@ -1640,6 +1692,8 @@ async def edit_user_settings(client, query):
             await database.update_user_doc(user_id, data[3])
         else:
             update_user_ldata(user_id, data[3], "")
+            if data[3] == "MEGA_EMAIL":
+                update_user_ldata(user_id, "MEGA_PASSWORD", "")
             await database.update_user_data(user_id)
         await get_menu(data[3], message, user_id)
     elif data[2] == "reset":

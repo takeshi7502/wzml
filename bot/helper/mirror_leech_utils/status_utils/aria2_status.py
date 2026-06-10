@@ -37,7 +37,9 @@ class Aria2Status:
 
     def progress(self):
         try:
-            return f"{round(int(self._download.get("completedLength", "0")) / int(self._download.get("totalLength", "0")) * 100, 2)}%"
+            completed = int(self._download.get("completedLength", "0"))
+            total = int(self._download.get("totalLength", "0"))
+            return f"{round(completed / total * 100, 2)}%"
         except ZeroDivisionError:
             return "0%"
 
@@ -45,9 +47,8 @@ class Aria2Status:
         return get_readable_file_size(int(self._download.get("completedLength", "0")))
 
     def speed(self):
-        return (
-            f"{get_readable_file_size(int(self._download.get("downloadSpeed", "0")))}/s"
-        )
+        download_speed = int(self._download.get("downloadSpeed", "0"))
+        return f"{get_readable_file_size(download_speed)}/s"
 
     def name(self):
         return aria2_name(self._download)
@@ -91,9 +92,8 @@ class Aria2Status:
         return get_readable_file_size(int(self._download.get("uploadLength", "0")))
 
     def seed_speed(self):
-        return (
-            f"{get_readable_file_size(int(self._download.get("uploadSpeed", "0")))}/s"
-        )
+        upload_speed = int(self._download.get("uploadSpeed", "0"))
+        return f"{get_readable_file_size(upload_speed)}/s"
 
     def ratio(self):
         try:

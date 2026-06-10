@@ -1,1 +1,1 @@
-source .venv/bin/activate && python3 update.py && python3 -m bot
+source /wzvenv/bin/activate && python3 update.py && python3 -m bot

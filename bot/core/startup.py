@@ -45,9 +45,9 @@ async def update_qb_options():
         for k in list(qbit_options.keys()):
             if k.startswith("rss"):
                 del qbit_options[k]
-        qbit_options["web_ui_password"] = "admin"
+        qbit_options["web_ui_password"] = "adminadmin"
         await TorrentManager.qbittorrent.app.set_preferences(
-            {"web_ui_password": "admin"}
+            {"web_ui_password": "adminadmin"}
         )
     else:
         await TorrentManager.qbittorrent.app.set_preferences(qbit_options)
@@ -349,6 +349,8 @@ async def load_configurations():
         LOGGER.info("Torrents are disabled. Skipping qBittorrent initialization.")
     else:
         try:
+            if len(str(qbit_options.get("web_ui_password", ""))) < 6:
+                qbit_options["web_ui_password"] = "adminadmin"
             await TorrentManager.qbittorrent.app.set_preferences(qbit_options)
         except Exception as e:
             LOGGER.error(f"Failed to configure qBittorrent: {e}")

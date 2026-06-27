@@ -49,6 +49,7 @@ from ..helper.telegram_helper.message_utils import (
     delete_links,
     get_tg_link_message,
     send_message,
+    set_message_reaction,
 )
 
 
@@ -361,6 +362,7 @@ class Mirror(TaskListener):
             and not is_gdrive_link(self.link)
             and not is_mega_link(self.link)
         ):
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, COMMAND_USAGE["mirror"][0], COMMAND_USAGE["mirror"][1]
             )
@@ -374,6 +376,7 @@ class Mirror(TaskListener):
         try:
             await self.before_start()
         except Exception as e:
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, e)
             await self.remove_from_same_dir()
             await delete_links(self.message)
@@ -406,15 +409,19 @@ class Mirror(TaskListener):
                     if "This link requires a password!" not in e:
                         LOGGER.info(e)
                     if e.startswith("ERROR:"):
+                        await set_message_reaction(self.message, "❌")
                         await send_message(self.message, e)
                         await self.remove_from_same_dir()
                         await delete_links(self.message)
                         return
                 except Exception as e:
+                    await set_message_reaction(self.message, "❌")
                     await send_message(self.message, e)
                     await self.remove_from_same_dir()
                     await delete_links(self.message)
                     return
+
+        await set_message_reaction(self.message, "✅")
 
         if file_ is not None:
             await TelegramDownloadHelper(self).add_download(

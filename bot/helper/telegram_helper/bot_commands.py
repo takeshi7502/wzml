@@ -1,4 +1,4 @@
-from ...core.config_manager import Config
+﻿from ...core.config_manager import Config
 from ...core.plugin_manager import get_plugin_manager
 
 
@@ -34,6 +34,7 @@ class BotCommands:
         "RestartSessions": ["restartses", "rses"],
         "Broadcast": ["broadcast", "bc"],
         "Stats": ["stats", "st"],
+        "SpeedTestModule": "sp",
         "Help": ["help", "h"],
         "Log": "log",
         "Shell": "shell",

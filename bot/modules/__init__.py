@@ -46,6 +46,7 @@ from .nzb_search import hydra_search
 from .services import start, start_cb, login, ping, quota, log, log_cb
 from .shell import run_shell
 from .stats import bot_stats, stats_pages, get_packages_version
+from .speedtest import speedtest
 from .status import task_status, status_pages
 from .users_settings import get_users_settings, edit_user_settings, send_user_settings
 from .gen_pyro_sess import gen_pyro_string
@@ -119,6 +120,7 @@ __all__ = [
     "bot_stats",
     "stats_pages",
     "get_packages_version",
+    "speedtest",
     "task_status",
     "status_pages",
     "get_users_settings",

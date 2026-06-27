@@ -197,7 +197,7 @@ def _usage_text(user_id, quota, exceeded=False, user=None, show_upgrade=True):
         "⌬ <b>User Quota :</b>\n"
         "│\n"
         f"┟ <b>Name</b> → {_user_label(user_id, user)}\n"
-        f"┠ <b>Daily Free</b> → {summary['daily_limit'] - summary['daily_used']} / {summary['daily_limit']}\n"
+        f"┠ <b>Quota Free</b> → {summary['daily_limit'] - summary['daily_used']} / {summary['daily_limit']}\n"
         f"┠ <b>Pending Tasks</b> → {summary['pending']}\n"
         f"┠ <b>Extra Quota</b> → {summary['extra_quota']}\n"
         f"┠ <b>Reset After</b> → {summary['reset_after']}\n"
@@ -306,7 +306,7 @@ async def quota_set_vip_limit(user_id, limit):
     limit = int(limit)
     base_limit = _base_limit()
     if limit <= base_limit:
-        return False, f"VIP daily limit must be greater than current Daily Free ({base_limit}/day)."
+        return False, f"VIP daily limit must be greater than current Quota Free ({base_limit}/day)."
     async with _locks[user_id]:
         data = user_data.setdefault(user_id, {})
         data["VIP_DAILY_LIMIT"] = limit

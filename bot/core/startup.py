@@ -200,8 +200,29 @@ async def load_settings():
                         await f.write(value)
             LOGGER.info("Loaded.. Sabnzbd Data from MongoDB")
 
+        user_part = PART
+        if not user_exists:
+            try:
+                legacy_parts = [
+                    name
+                    for name in await database.db.users.list_collection_names()
+                    if name != PART
+                ]
+                for legacy_part in legacy_parts:
+                    if await database.db.users[legacy_part].find_one({"USER_QUOTA": {"$exists": True}}):
+                        user_part = legacy_part
+                        user_exists = True
+                        LOGGER.info(
+                            "Legacy Users Data found in MongoDB collection %s; importing for current partition %s",
+                            legacy_part,
+                            PART,
+                        )
+                        break
+            except Exception as e:
+                LOGGER.warning("Legacy Users Data lookup failed: %s", e)
+
         if user_exists:
-            rows = database.db.users[PART].find({})
+            rows = database.db.users[user_part].find({})
             async for row in rows:
                 uid = row["_id"]
                 del row["_id"]

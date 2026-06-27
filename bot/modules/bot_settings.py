@@ -367,6 +367,19 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
                 msg = "<i>Send one server as dictionary <code>{}</code>, like in config.py without <code>[]</code>.</i>\n┖ <b>Time Left :</b> <code>60 sec</code>"
             else:
                 msg = f"<i>Send a valid value for <code>{key}</code> in server <code>{Config.USENET_SERVERS[index]['name']}</code>.</i> Current value is <code>{Config.USENET_SERVERS[index][key]}</code>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+        elif edit_type == "quotavar":
+            label = {
+                "USER_QUOTA_DAILY_LIMIT": "Quota Free",
+                "USER_QUOTA_RESET_HOUR": "Reset Time",
+            }.get(key, key)
+            buttons.data_button("Back", "botset quota", style=ButtonStyle.PRIMARY)
+            buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+            current = Config.get(key)
+            msg = f"""⌬ <b>User Quota Settings :</b>
+│
+┟ <b>Edit</b> → {label}
+┠ <b>Current</b> → <code>{current}</code>
+┖ <b>Time Left</b> → <code>60 sec</code>"""
         elif edit_type == "editvar":
             msg = f"<b>Variable:</b> <code>{key}</code>\n\n"
             msg += f"<b>Description:</b> {DEFAULT_DESP.get(key, 'No Description Provided')}\n\n"
@@ -434,10 +447,10 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
         msg = f"⌬ <b><u>Config Variables</u></b> | <b><u>Page: {int(start / 10) + 1}</b></u>"
     elif key == "quota":
         quota_toggle = "Disable" if Config.USER_QUOTA_ENABLED else "Enable"
-        notify_toggle = "Disable Reset Notice" if Config.USER_QUOTA_RESET_NOTIFY else "Enable Reset Notice"
+        notify_toggle = "[✓] Reset Notice" if Config.USER_QUOTA_RESET_NOTIFY else "[✘] Reset Notice"
         buttons.data_button(quota_toggle, "botset quotatoggle")
         buttons.data_button(notify_toggle, "botset quotanotifytoggle")
-        buttons.data_button("Set Daily Free", "botset quotaedit USER_QUOTA_DAILY_LIMIT")
+        buttons.data_button("Set Quota Free", "botset quotaedit USER_QUOTA_DAILY_LIMIT")
         buttons.data_button("Set Reset Time", "botset quotaedit USER_QUOTA_RESET_HOUR")
         buttons.data_button("View User Usage", "botset quotaaction view")
         buttons.data_button("Back", "botset back", position="footer")
@@ -448,11 +461,11 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
 │
 ┟ <b>Status</b> → {status}
 ┠ <b>Reset Notice</b> → {notify_status}
-┠ <b>Daily Free Limit</b> → {Config.USER_QUOTA_DAILY_LIMIT} / day
+┠ <b>Quota Free Limit</b> → {Config.USER_QUOTA_DAILY_LIMIT} / day
 ┖ <b>Reset Time</b> → {Config.USER_QUOTA_RESET_HOUR:02}:00 {Config.TIMEZONE}"""
     elif key == "referral":
-        referral_toggle = "Disable Invite" if Config.REFERRAL_ENABLED else "Enable Invite"
-        subscribe_toggle = "Disable Subscribe" if Config.REFERRAL_SUBSCRIBE_ENABLED else "Enable Subscribe"
+        referral_toggle = "[✓] Invite" if Config.REFERRAL_ENABLED else "[✘] Invite"
+        subscribe_toggle = "[✓] Subscribe" if Config.REFERRAL_SUBSCRIBE_ENABLED else "[✘] Subscribe"
         buttons.data_button(referral_toggle, "botset referraltoggle")
         buttons.data_button(subscribe_toggle, "botset subscribetoggle")
         buttons.data_button("Reward Quota", "botset referraledit REFERRAL_REWARD_QUOTA")

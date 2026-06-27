@@ -1,7 +1,18 @@
 from ast import literal_eval
 from importlib import import_module
 from os import getenv
-from wz_bin import bin_name
+
+try:
+    from wz_bin import bin_name
+except ModuleNotFoundError:
+    def bin_name(index):
+        return (
+            "/usr/bin/aria2c",
+            "/usr/bin/qbittorrent-nox",
+            "/usr/bin/ffmpeg",
+            "/usr/bin/rclone",
+            "/usr/bin/sabnzbdplus",
+        )[index]
 
 
 class Config:
@@ -135,15 +146,15 @@ class Config:
     USER_MAX_TASKS = 0
     USER_TIME_INTERVAL = 0
     USER_QUOTA_ENABLED = False
-    USER_QUOTA_DAILY_LIMIT = 20
+    USER_QUOTA_DAILY_LIMIT = 10
     USER_QUOTA_RESET_HOUR = 3
     USER_QUOTA_RESET_NOTIFY = False
     REFERRAL_ENABLED = False
-    REFERRAL_REWARD_QUOTA = 2
+    REFERRAL_REWARD_QUOTA = 15
     REFERRAL_REQUIRED_CHAT_ID = 0
     REFERRAL_REQUIRED_CHAT_LINK = ""
     REFERRAL_SUBSCRIBE_ENABLED = False
-    REFERRAL_SUBSCRIBE_REWARD_QUOTA = 1
+    REFERRAL_SUBSCRIBE_REWARD_QUOTA = 36
     REFERRAL_SUBSCRIBE_CHANNEL_LINK = ""
     UPLOAD_PATHS = {}
     DRIVE_CATEGORY_MODE = False

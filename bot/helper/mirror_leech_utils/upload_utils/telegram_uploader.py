@@ -107,9 +107,14 @@ class TelegramUploader:
             msg_link = (
                 self._listener.message.link if self._listener.is_super_chat else ""
             )
+            message_link_line = (
+                f"\n┠ <b>Message Link :</b> <a href='{msg_link}'>Click Here</a>"
+                if msg_link
+                else ""
+            )
             msg = f"""➲ <b><u>Leech Started :</u></b>
 ┃
-┠ <b>User :</b> {self._listener.user.mention} ( #ID{self._listener.user_id} ){f"\n┠ <b>Message Link :</b> <a href='{msg_link}'>Click Here</a>" if msg_link else ""}
+┠ <b>User :</b> {self._listener.user.mention} ( #ID{self._listener.user_id} ){message_link_line}
 ┖ <b>Source :</b> <a href='{self._listener.source_url}'>Click Here</a>"""
             try:
                 self._log_msg = await TgClient.bot.send_message(

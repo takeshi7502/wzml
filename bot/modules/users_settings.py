@@ -27,6 +27,8 @@ from ..helper.ext_utils.db_handler import database
 from ..helper.ext_utils.mega_utils import get_mega_account_info
 from ..helper.ext_utils.media_utils import create_thumb
 from ..helper.ext_utils.status_utils import get_readable_file_size
+from ..helper.ext_utils.user_quota_manager import quota_get_usage
+from ..helper.ext_utils.referral_manager import referral_invite_link, referral_share_link
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.message_utils import (
     delete_message,
@@ -348,6 +350,7 @@ async def get_user_settings(from_user, stype="main"):
         buttons.data_button("Mirror Settings", f"userset {user_id} mirror")
         buttons.data_button("Leech Settings", f"userset {user_id} leech")
         buttons.data_button("Uphoster Settings", f"userset {user_id} uphoster")
+        buttons.data_button("Quota / Invite", f"userset {user_id} quota")
         buttons.data_button("FF Media Settings", f"userset {user_id} ffset")
         buttons.data_button(
             "Misc Settings", f"userset {user_id} advanced", position="l_body"
@@ -383,6 +386,21 @@ async def get_user_settings(from_user, stype="main"):
 ┠ <b>Telegram DC</b> → {from_user.dc_id}
 ┖ <b>Telegram Lang</b> → {Language.get(lc).display_name() if (lc := from_user.language_code) else "N/A"}"""
 
+        btns = buttons.build_menu(2)
+
+    elif stype == "quota":
+        buttons.data_button("Back", f"userset {user_id} back", "footer")
+        buttons.data_button(
+            "Close", f"userset {user_id} close", "footer", style=ButtonStyle.DANGER
+        )
+        invite_link = referral_invite_link(user_id)
+        share_link = referral_share_link(user_id)
+        if invite_link:
+            buttons.url_button("Invite Link", invite_link)
+        if share_link:
+            buttons.url_button("Share Invite", share_link)
+        quota_text = await quota_get_usage(user_id, user=from_user, show_upgrade=False)
+        text = f"{quota_text}\n\n⌬ <b>Referral :</b>\n│\n┟ <b>Invite Link</b> → {invite_link or 'N/A'}\n┖ <b>Share Link</b> → {share_link or 'N/A'}"
         btns = buttons.build_menu(2)
 
     elif stype == "general":
@@ -1479,6 +1497,7 @@ async def edit_user_settings(client, query):
         "vikingfile",
         "ffset",
         "advanced",
+        "quota",
         "gdrive",
         "rclone",
     ]:

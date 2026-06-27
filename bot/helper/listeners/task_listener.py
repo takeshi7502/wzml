@@ -42,6 +42,7 @@ from ..ext_utils.files_utils import (
 from ..ext_utils.links_utils import is_gdrive_id
 from ..ext_utils.status_utils import get_readable_file_size, get_readable_time
 from ..ext_utils.task_manager import check_running_tasks, start_from_queued
+from ..ext_utils.user_quota_manager import quota_confirm_task, quota_release_task
 from ..mirror_leech_utils.uphoster_utils.multi_upload import MultiUphosterUpload
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
@@ -418,6 +419,7 @@ class TaskListener(TaskConfig):
             and Config.DATABASE_URL
         ):
             await database.rm_complete_task(self.message.link)
+        await quota_confirm_task(self)
         msg = (
             f"<b><i>{escape(self.name)}</i></b>\n│"
             f"\n┟ <b>Task Size</b> → {get_readable_file_size(self.size)}"
@@ -614,6 +616,7 @@ class TaskListener(TaskConfig):
             if self.mid in task_dict:
                 del task_dict[self.mid]
             count = len(task_dict)
+        await quota_release_task(self, "download_error")
         await self.remove_from_same_dir()
         msg = (
             f"""〶 <b><i><u>Limit Breached:</u></i></b>
@@ -672,6 +675,7 @@ class TaskListener(TaskConfig):
             if self.mid in task_dict:
                 del task_dict[self.mid]
             count = len(task_dict)
+        await quota_release_task(self, "upload_error")
         await send_message(self.message, f"{self.tag} {escape(str(error))}")
         await delete_links(self.message)
         if count == 0:

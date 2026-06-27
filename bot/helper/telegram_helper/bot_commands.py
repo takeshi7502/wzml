@@ -52,6 +52,7 @@ class BotCommands:
         "RmBlackList": ["rmblacklist", "rbl"],
         "BotSet": ["bsetting", "bs"],
         "UserSet": ["usetting", "us"],
+        "Quota": ["quota", "qta"],
         "Select": ["select", "sel"],
         "NzbSearch": ["nzbsearch", "ns"],
         "GenPyroSess": "exportsession",

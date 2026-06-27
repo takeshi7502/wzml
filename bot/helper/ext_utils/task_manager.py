@@ -284,6 +284,12 @@ async def pre_task_check(message):
     if token_msg is not None:
         msg.append(token_msg)
 
+    from .user_quota_manager import quota_precheck
+
+    quota_msg = await quota_precheck(message)
+    if quota_msg:
+        msg.append(quota_msg)
+
     if msg:
         username = message.from_user.mention
         final_msg = f"⌬ <b>Task Checks :</b>\n│\n┟ <b>Name</b> → {username}\n┃\n"

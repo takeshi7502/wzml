@@ -362,6 +362,13 @@ def add_handlers():
     TgClient.bot.add_handler(CallbackQueryHandler(start_cb, filters=regex("^start")))
     TgClient.bot.add_handler(
         MessageHandler(
+            quota,
+            filters=command(BotCommands.QuotaCommand, case_sensitive=True)
+            & CustomFilters.authorized_uset,
+        )
+    )
+    TgClient.bot.add_handler(
+        MessageHandler(
             torrent_search,
             filters=command(BotCommands.SearchCommand, case_sensitive=True)
             & CustomFilters.authorized,

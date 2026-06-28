@@ -182,10 +182,10 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
             except MediaCaptionTooLong:
                 return await send_message(
                     message,
-                    text[:1024],
+                    text,
                     buttons,
                     block,
-                    photo,
+                    None,
                 )
             except (
                 PhotoInvalidDimensions,
@@ -285,6 +285,25 @@ async def edit_message(message, text, buttons=None, block=True, photo=None):
         )
     except (MessageNotModified, MessageEmpty):
         pass
+    except MediaCaptionTooLong:
+        try:
+            if message.media:
+                new_msg = await TgClient.bot.send_message(
+                    chat_id=message.chat.id,
+                    text=text,
+                    disable_web_page_preview=True,
+                    reply_markup=buttons,
+                )
+                await delete_message(message)
+                return new_msg
+            return await message.edit(
+                text=text,
+                disable_web_page_preview=True,
+                reply_markup=buttons,
+            )
+        except Exception as e:
+            LOGGER.error(str(e), exc_info=True)
+            return str(e)
     except ReplyMarkupInvalid as rmi:
         LOGGER.warning(str(rmi))
         return await edit_message(message, text, None, block, photo)

@@ -17,6 +17,7 @@ from pyrogram.errors import (
     MediaCaptionTooLong,
     EntityBoundsInvalid,
     PeerIdInvalid,
+    ChatWriteForbidden,
 )
 
 try:
@@ -238,6 +239,9 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
         LOGGER.warning(f"PeerIdInvalid {type(message)}")  # My Debug Style
         if isinstance(message, (int, str)):
             return await send_message(int(message), text, buttons, block, photo)
+    except ChatWriteForbidden as e:
+        LOGGER.warning(f"Cannot send message: {e}")
+        return str(e)
     except ConnectionError:
         return
     except Exception as e:

@@ -26,7 +26,7 @@ services:
   app:
     build: .
     command: bash start.sh
-    restart: "no"
+    restart: unless-stopped
     volumes:
       - ./config.py:/usr/src/app/config.py:ro
       - ./accounts:/usr/src/app/accounts

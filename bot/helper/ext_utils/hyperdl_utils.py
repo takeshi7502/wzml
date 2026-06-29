@@ -1,147 +1,66 @@
-import os
-from itertools import cycle
 from asyncio import (
-    FIRST_COMPLETED,
     CancelledError,
-    Lock,
     create_task,
-    ensure_future,
     gather,
     sleep,
-    to_thread,
-    wait,
+    wait_for,
+    TimeoutError as AsyncTimeoutError,
+    Event,
 )
 from datetime import datetime
+from math import ceil, floor
 from mimetypes import guess_extension
-from os import cpu_count
+from os import path as ospath
 from pathlib import Path
 from re import sub
 from sys import argv
+from time import time
 
-from aiofiles.os import makedirs
-from pyrogram import StopTransmission, raw
-from pyrogram.crypto.aes import ctr256_decrypt
-from pyrogram.errors import (
-    FileMigrate,
-    FileReferenceExpired,
-    FileReferenceInvalid,
-    FileTokenInvalid,
-    FloodPremiumWait,
-    FloodWait,
-    RequestTokenInvalid,
-)
-from pyrogram.file_id import PHOTO_TYPES, FileId, FileType
-from pyrogram.session import Auth
+from aiofiles import open as aiopen
+from aiofiles.os import makedirs, remove
+from aioshutil import move
+from pyrogram import StopTransmission, raw, utils
+from pyrogram.errors import AuthBytesInvalid, FloodWait
+from pyrogram.file_id import PHOTO_TYPES, FileId, FileType, ThumbnailSource
+from pyrogram.session import Auth, Session
 from pyrogram.session.internals import MsgId
-from ...hyper_mtproto.session import Session as HyperSession
 
 from ... import LOGGER
 from ...core.config_manager import Config
 from ...core.tg_client import TgClient
-from ..telegram_helper.tg_transfer import MB, HypertgTransfer
-
-KB = 1024
-_load_lock = Lock()
 
 
-async def _pick_clients(wl, clients, count):
-    keys = list(clients.keys())
-    async with _load_lock:
-        picked = sorted(keys, key=lambda i: wl.get(i, 0))[:count]
-        for k in picked:
-            wl[k] = wl.get(k, 0) + 1
-    return picked
-
-
-class HypertgDownload(HypertgTransfer):
-    KB = 1024
-    _MIN_CHUNK = 64 * KB
-    _DEFAULT_PIPELINE = 32
-    _MIN_PIPELINE = 4
-    _MAX_PIPELINE_MULT = 4
-    _LOW_WORKERS = 2
-    _HIGH_WORKERS = max(8, (cpu_count() or 4) * 2)
-    _MAX_RETRIES = 4
-
-    def __init__(self, obj):
-        super().__init__(obj)
-        self.chunk_size = max(Config.HYPER_CHUNK or 256 * self.KB, self._MIN_CHUNK)
-        self.num_parts = Config.HYPER_THREADS or max(
-            self._LOW_WORKERS, min(self._HIGH_WORKERS, self.num_clients)
-        )
-        base_pipe = max(
-            Config.HYPER_PIPELINE or self._DEFAULT_PIPELINE, self._MIN_PIPELINE
-        )
-        self.pipeline_depth = max(
-            base_pipe // max(self.num_parts, 1), self._MIN_PIPELINE
-        )
+class HyperTGDownload:
+    def __init__(self):
+        self.clients = TgClient.helper_bots
+        self.work_loads = TgClient.helper_loads
         self.message = None
-        self.media = None
         self.dump_chat = None
-        self.directory = None
-        self.file_name = ""
-        self.file_size = 0
         self.download_dir = "downloads/"
-        self._ref_cache = {}
-        self._cdn_info = {}
-        self._cdn_sessions = {}
-
-    def _ref_get(self, idx):
-        return self._ref_cache.get(idx)
-
-    def _ref_put(self, idx, data):
-        if len(self._ref_cache) > 100:
-            self._ref_cache.pop(next(iter(self._ref_cache)))
-        self._ref_cache[idx] = data
-
-    async def _fetch_ref(self, idx, client, force=False):
-        if not force:
-            cached = self._ref_get(idx)
-            if cached is not None:
-                return cached
-        # Try with the given client first
-        fid = await self._fetch_ref_try(client)
-        if fid:
-            self._ref_put(idx, fid)
-            return fid
-        # Fallback: try each available bot client
-        LOGGER.warning(
-            "HypertgDL ref ci=%d: client can't access dump_chat=%s, trying bots",
-            idx,
-            self.dump_chat,
-        )
-        for cix, cl in self.clients.items():
-            if cix > 0:  # bot clients only
-                fid = await self._fetch_ref_try(cl)
-                if fid:
-                    self._ref_put(idx, fid)
-                    return fid
-        raise ValueError(
-            f"no file_id in msg {self.message.id} in dump_chat={self.dump_chat} (all clients failed)"
-        )
-
-    async def _fetch_ref_try(self, client):
-        try:
-            msg = await client.get_messages(self.dump_chat, self.message.id)
-            if msg is None:
-                LOGGER.warning(
-                    "HypertgDL _fetch_ref_try: msg %s not found in %s",
-                    self.message.id,
-                    self.dump_chat,
-                )
-                return None
-            media = self._media_of(msg)
-            fid_str = media.file_id if hasattr(media, "file_id") else None
-            if not fid_str:
-                return None
-            return FileId.decode(fid_str)
-        except Exception as e:
-            LOGGER.warning("HypertgDL _fetch_ref_try: %s", e)
-            return None
+        self.directory = None
+        self.num_parts = Config.HYPER_THREADS or max(8, len(self.clients))
+        self.cache_file_ref = {}
+        self.cache_last_access = {}
+        self.cache_max_size = 100
+        self._processed_bytes = 0
+        self.file_size = 0
+        self.chunk_size = 1024 * 1024
+        self.file_name = ""
+        self._cancel_event = Event()
+        self.session_pool = {}
+        create_task(self._clean_cache())
 
     @staticmethod
-    def _media_of(message):
-        for attr in (
+    async def get_media_type(message):
+        if not message:
+            raise ValueError("Empty message returned while resolving media")
+
+        if getattr(message, "media", None):
+            media_name = message.media.value
+            if media := getattr(message, media_name, None):
+                return media
+
+        media_types = (
             "audio",
             "document",
             "photo",
@@ -151,678 +70,507 @@ class HypertgDownload(HypertgTransfer):
             "voice",
             "video_note",
             "new_chat_photo",
-            "story",
-            "web_page",
-        ):
-            if m := getattr(message, attr, None):
-                return m
+        )
+        for attr in media_types:
+            if media := getattr(message, attr, None):
+                return media
+
         raise ValueError(
-            f"No downloadable media in msg {message.id} (type: {message.media})"
+            "This message doesn't contain any downloadable media "
+            f"(id={getattr(message, 'id', None)}, "
+            f"media={getattr(getattr(message, 'media', None), 'value', None)}, "
+            f"text={bool(getattr(message, 'text', None))}, "
+            f"caption={bool(getattr(message, 'caption', None))})"
         )
 
-    async def _do_req(self, sess, client, location, off, csz, attempt=0):
-        try:
-            r = await sess.invoke(
-                raw.functions.upload.GetFile(
-                    precise=True,
-                    cdn_supported=True,
-                    location=location,
-                    offset=off,
-                    limit=csz,
-                ),
-                sleep_threshold=client.sleep_threshold,
-            )
-            if isinstance(r, raw.types.upload.File):
-                return r.bytes
-            if isinstance(r, raw.types.upload.FileCdnRedirect):
-                return None, {
-                    "cdn_dc": r.dc_id,
-                    "file_token": r.file_token,
-                    "key": r.encryption_key,
-                    "iv": r.encryption_iv,
-                }
-            raise ValueError(f"Unexpected response type: {type(r)}")
-        except FileMigrate as e:
-            dc = e.value if hasattr(e, "value") else int(str(e).split()[-1])
-            if attempt < 3:
-                return None, dc
-            raise
-        except (FileReferenceExpired, FileReferenceInvalid):
-            if attempt < 3:
-                return None, -1
-            raise
-        except (ConnectionError, OSError, TimeoutError):
-            if attempt < 3:
-                return None, -2
-            raise
+    def _update_cache(self, index, file_ref):
+        self.cache_file_ref[index] = file_ref
+        self.cache_last_access[index] = time()
 
-    async def _get_cdn_session(self, idx, cdn_dc, client):
-        key = (idx, cdn_dc)
-        s = self._cdn_sessions.get(key)
-        if s and s.is_connected.is_set() and not s._closed:
-            return s
-        tm = await client.storage.test_mode()
-        ak = await Auth(client, cdn_dc, tm).create()
-        s = HyperSession(client, cdn_dc, ak, tm, is_media=True, is_cdn=True)
-        await s.start()
-        self._cdn_sessions[key] = s
-        return s
+        if len(self.cache_file_ref) > self.cache_max_size:
+            oldest = sorted(self.cache_last_access.items(), key=lambda x: x[1])[0][0]
+            del self.cache_file_ref[oldest]
+            del self.cache_last_access[oldest]
 
-    async def _cdnpull(self, idx, cdn_info, off, csz):
-        client = self.clients[idx]
-        cdn_dc = cdn_info["cdn_dc"]
-        file_token = cdn_info["file_token"]
-        enc_key = cdn_info["key"]
-        enc_iv = cdn_info["iv"]
-        sess = await self._get_cdn_session(idx, cdn_dc, client)
+    async def get_specific_file_ref(self, mid, client, max_retries=3):
+        retries = 0
+        last_error = None
 
-        for attempt in range(3):
+        while retries < max_retries:
             try:
-                r = await sess.invoke(
-                    raw.functions.upload.GetCdnFile(
-                        file_token=file_token,
-                        offset=off,
-                        limit=csz,
-                    ),
-                    sleep_threshold=client.sleep_threshold,
-                )
-                if isinstance(r, raw.types.upload.CdnFile):
-                    chunk = r.bytes
-                    iv_mod = bytearray(enc_iv[:-4] + (off // 16).to_bytes(4, "big"))
-                    return ctr256_decrypt(chunk, enc_key, iv_mod)
-                if isinstance(r, raw.types.upload.CdnFileReuploadNeeded):
-                    try:
-                        await client.invoke(
-                            raw.functions.upload.ReuploadCdnFile(
-                                file_token=file_token,
-                                request_token=r.request_token,
-                            )
-                        )
-                    except Exception:
-                        pass
-                    await sleep(1)
-                    continue
-                raise ValueError(f"Unexpected CDN response: {type(r)}")
-            except (FloodWait, FloodPremiumWait) as e:
-                val = e.value if hasattr(e, "value") else 5
-                LOGGER.warning(f"HypertgDL CDN flood {val}s dc={cdn_dc}")
-                await sleep(val + 1)
-            except FileTokenInvalid:
+                media_message = await client.get_messages(self.dump_chat, mid)
+                media_obj = await self.get_media_type(media_message)
+                return FileId.decode(getattr(media_obj, "file_id", ""))
+            except Exception as e:
+                last_error = e
+                retries += 1
                 LOGGER.warning(
-                    f"HypertgDL CDN FileTokenInvalid dc={cdn_dc} — fallback to non-CDN"
+                    f"Retry {retries}/{max_retries}: failed to resolve media "
+                    f"message {mid} from {self.dump_chat} with "
+                    f"Client {getattr(client.me, 'username', 'unknown')}: {e}"
                 )
-                self._cdn_info.pop(idx, None)
-                return None
-            except RequestTokenInvalid:
-                LOGGER.warning(
-                    f"HypertgDL CDN RequestTokenInvalid dc={cdn_dc} — fallback to non-CDN"
-                )
-                self._cdn_info.pop(idx, None)
-                return None
-            except (ConnectionError, OSError, TimeoutError) as e:
-                LOGGER.warning(f"HypertgDL CDN {type(e).__name__}: {e} dc={cdn_dc}")
-                if attempt < 2:
-                    try:
-                        await sess.stop()
-                    except Exception:
-                        pass
-                    self._cdn_sessions.pop((idx, cdn_dc), None)
-                    sess = await self._get_cdn_session(idx, cdn_dc, client)
-                    await sleep(1)
-        return None
+                await sleep(2 * retries)
 
-    async def _pipeline_fetch(self, idx, location, start, end, fid, csz, fd):
-        cname = self.clients[idx].me.username
-        sess = await self._get_session(idx, fid.dc_id)
-        loc = location
-        first_off = start - (start % csz)
-        first_trim = start - first_off
-        last_byte = end - 1
-        window = self.pipeline_depth
-        min_win = self._MIN_PIPELINE
-        max_win = window * self._MAX_PIPELINE_MULT
-        inflight = set()
-        _inflight_offsets = {}
-        cur = first_off
-        seq = 0
-        ok_count = 0
-        flood_count = 0
-        timeout_count = 0
-        pipe_timeouts = 0
-        bot_down = False
+        LOGGER.error(
+            f"Failed to get message {mid} from {self.dump_chat} with Client {client.me.username}"
+        )
+        raise ValueError(
+            f"Bot needs Admin access in Chat or message may be deleted. Error: {last_error}"
+        )
 
-        async def _write(roff, chunk):
-            if roff == first_off and roff + csz >= end:
-                chunk = chunk[first_trim : last_byte - roff + 1]
-                await self._pwrite(fd, chunk, start)
-            elif roff == first_off:
-                chunk = chunk[first_trim:]
-                await self._pwrite(fd, chunk, start)
-            elif roff + csz > end:
-                chunk = chunk[: end - roff]
-                await self._pwrite(fd, chunk, roff)
-            else:
-                await self._pwrite(fd, chunk, roff)
-            self._obj._processed_bytes += len(chunk)
+    async def get_file_id(self, client, index) -> FileId:
+        if index not in self.cache_file_ref:
+            file_ref = await self.get_specific_file_ref(self.message.id, client)
+            self._update_cache(index, file_ref)
+        else:
+            self.cache_last_access[index] = time()
+        return self.cache_file_ref[index]
 
-        async def _req(off, s):
-            nonlocal \
-                window, \
-                ok_count, \
-                flood_count, \
-                timeout_count, \
-                sess, \
-                loc, \
-                pipe_timeouts, \
-                bot_down
-            if bot_down:
-                return s, off, b""
-            my_sess = sess
-            my_loc = loc
-            max_attempts = 1
-            for attempt in range(max_attempts):
-                try:
-                    cdn = self._cdn_info.get(idx)
-                    if cdn:
-                        chunk = await self._cdnpull(idx, cdn, off, csz)
-                        if chunk is not None:
-                            return s, off, chunk
-                    result = await self._do_req(
-                        my_sess, self.clients[idx], my_loc, off, csz, attempt
+    async def _clean_cache(self):
+        while True:
+            await sleep(15 * 60)
+            current_time = time()
+            expired_keys = [
+                k
+                for k, v in self.cache_last_access.items()
+                if current_time - v > 45 * 60
+            ]
+
+            for key in expired_keys:
+                if key in self.cache_file_ref:
+                    del self.cache_file_ref[key]
+                if key in self.cache_last_access:
+                    del self.cache_last_access[key]
+
+    async def generate_media_session(self, client, file_id, index, max_retries=3):
+        session_key = (index, file_id.dc_id)
+
+        if session_key in self.session_pool:
+            return self.session_pool[session_key]
+
+        retries = 0
+        while retries < max_retries:
+            try:
+                if file_id.dc_id != await client.storage.dc_id():
+                    media_session = Session(
+                        client,
+                        file_id.dc_id,
+                        await Auth(
+                            client, file_id.dc_id, await client.storage.test_mode()
+                        ).create(),
+                        await client.storage.test_mode(),
+                        is_media=True,
                     )
-                    if isinstance(result, tuple):
-                        _, dc_or_ref = result
-                        if isinstance(dc_or_ref, dict):
-                            self._cdn_info[idx] = dc_or_ref
-                            chunk = await self._cdnpull(idx, dc_or_ref, off, csz)
-                            if chunk is not None:
-                                return s, off, chunk
-                            self._cdn_info.pop(idx, None)
-                            await sleep(attempt + 1)
-                            continue
-                        if dc_or_ref == -1:
-                            fid_new = await self._fetch_ref(
-                                idx, self.clients[idx], force=True
+                    await media_session.start()
+
+                    for _ in range(6):
+                        exported_auth = await client.invoke(
+                            raw.functions.auth.ExportAuthorization(dc_id=file_id.dc_id)
+                        )
+
+                        try:
+                            await media_session.invoke(
+                                raw.functions.auth.ImportAuthorization(
+                                    id=exported_auth.id, bytes=exported_auth.bytes
+                                )
                             )
-                            my_loc = self._location(fid_new)
-                            await sleep(attempt + 1)
-                            continue
-                        if dc_or_ref == -2:
-                            if bot_down:
-                                return s, off, b""
-                            pipe_timeouts += 1
-                            window = max(min_win, window - 1)
-                            if pipe_timeouts >= 3:
-                                bot_down = True
-                                return s, off, b""
-                            await sleep(min(3, pipe_timeouts))
-                            continue
-                        my_sess = await self._get_session(idx, dc_or_ref, force=True)
-                        sess = my_sess
-                        await sleep(attempt + 1)
-                        continue
-                    timeout_count = 0
-                    return s, off, result
-                except (FloodWait, FloodPremiumWait) as e:
-                    flood_count += 1
-                    val = e.value if hasattr(e, "value") else 5
-                    if val > 10 or flood_count >= 3:
-                        window = max(min_win, window - max(1, window // 4))
-                        ok_count = 0
-                        flood_count = 0
-                        LOGGER.warning(
-                            f"HypertgDL flood window={window} "
-                            f"val={val}s client={cname} off={off}"
-                        )
-                    await sleep(val + 1)
-                except CancelledError:
-                    raise
-                except (ConnectionError, OSError, TimeoutError):
-                    pipe_timeouts += 1
-                    window = max(min_win, window - 1)
-                    if pipe_timeouts >= 3:
-                        bot_down = True
-                        return s, off, b""
-                    await sleep(min(3, pipe_timeouts))
-                    continue
-            timeout_count += 1
-            if timeout_count >= 3:
-                window = max(min_win, window - max(1, window // 4))
-                timeout_count = 0
-                ok_count = 0
-            return s, off, b""
-
-        write_tasks = set()
-        failed_offsets = set()
-        try:
-            while cur <= last_byte or inflight:
-                if bot_down:
-                    while inflight:
-                        done_set, inflight = await wait(
-                            inflight, return_when=FIRST_COMPLETED
-                        )
-                        for f in done_set:
-                            try:
-                                s, roff, chunk = f.result()
-                                if not chunk:
-                                    failed_offsets.add(roff)
-                                    continue
-                                write_tasks.add(create_task(_write(roff, chunk)))
-                            except CancelledError:
-                                raise
-                            except Exception:
-                                roff = _inflight_offsets.get(f)
-                                if roff is not None:
-                                    failed_offsets.add(roff)
-                    c = cur
-                    while c <= last_byte:
-                        failed_offsets.add(c)
-                        c += csz
-                    break
-                while len(inflight) < window and cur <= last_byte:
-                    if self._cancel.is_set():
-                        raise CancelledError
-                    f = ensure_future(_req(cur, seq))
-                    _inflight_offsets[f] = cur
-                    inflight.add(f)
-                    cur += csz
-                    seq += 1
-                if not inflight:
-                    break
-                done_set, inflight = await wait(inflight, return_when=FIRST_COMPLETED)
-                for f in done_set:
-                    s, roff, chunk = f.result()
-                    if not chunk:
-                        failed_offsets.add(roff)
-                        continue
-                    ok_count += 1
-                    if ok_count >= window:
-                        window = min(window + 2, max_win)
-                        ok_count = 0
-                    write_tasks.add(create_task(_write(roff, chunk)))
-        except CancelledError:
-            raise
-        except Exception as e:
-            if isinstance(e, (FloodWait, FloodPremiumWait)):
-                window = max(min_win, window // 2)
-                ok_count = 0
-            LOGGER.error(f"HypertgDL pipeline fail client={cname}: {e}")
-            raise
-        finally:
-            for f in inflight:
-                if not f.done():
-                    f.cancel()
-            if write_tasks:
-                write_results = await gather(*write_tasks, return_exceptions=True)
-                write_errors = sum(
-                    1 for r in write_results if isinstance(r, BaseException)
-                )
-                if write_errors:
-                    LOGGER.warning(
-                        f"HypertgDL {write_errors}/{len(write_results)} "
-                        f"write tasks failed client={cname}"
+                            break
+                        except AuthBytesInvalid:
+                            await sleep(1)
+                    else:
+                        await media_session.stop()
+                        raise AuthBytesInvalid
+                else:
+                    media_session = Session(
+                        client,
+                        file_id.dc_id,
+                        await client.storage.auth_key(),
+                        await client.storage.test_mode(),
+                        is_media=True,
                     )
-        return failed_offsets
+                    await media_session.start()
 
-    async def _part(self, start, end, final_path, ci, fid, csz):
-        cname = self.clients[ci].me.username
-        fd = await to_thread(os.open, final_path, os.O_WRONLY)
-        try:
-            failed_offsets = await self._pipeline_fetch(
-                ci, self._location(fid), start, end, fid, csz, fd
-            )
-        except Exception as e:
-            first_off = start - (start % csz)
-            failed_offsets = set(range(first_off, end, csz))
-            LOGGER.error(f"HypertgDL part fail ci={ci} client={cname}: {e}")
-            e.failed_offsets = failed_offsets
-            raise
-        finally:
-            await to_thread(os.close, fd)
-        return failed_offsets
+                self.session_pool[session_key] = media_session
+                return media_session
+
+            except Exception:
+                retries += 1
+                await sleep(1)
+
+        raise ValueError(f"Failed to create media session after {max_retries} attempts")
 
     @staticmethod
-    async def _pwrite(fd, data, offset):
-        total = len(data)
-        written = 0
-        while written < total:
-            n = await to_thread(os.pwrite, fd, data[written:], offset + written)
-            if n == 0:
-                raise OSError(f"pwrite returned 0 at offset {offset + written}")
-            written += n
+    async def get_location(file_id: FileId):
+        file_type = file_id.file_type
 
-    async def _retry_failed_offsets(
+        if file_type == FileType.CHAT_PHOTO:
+            if file_id.chat_id > 0:
+                peer = raw.types.InputPeerUser(
+                    user_id=file_id.chat_id, access_hash=file_id.chat_access_hash
+                )
+            else:
+                peer = (
+                    raw.types.InputPeerChat(chat_id=-file_id.chat_id)
+                    if file_id.chat_access_hash == 0
+                    else raw.types.InputPeerChannel(
+                        channel_id=utils.get_channel_id(file_id.chat_id),
+                        access_hash=file_id.chat_access_hash,
+                    )
+                )
+            return raw.types.InputPeerPhotoFileLocation(
+                peer=peer,
+                volume_id=file_id.volume_id,
+                local_id=file_id.local_id,
+                big=file_id.thumbnail_source == ThumbnailSource.CHAT_PHOTO_BIG,
+            )
+        elif file_type == FileType.PHOTO:
+            return raw.types.InputPhotoFileLocation(
+                id=file_id.media_id,
+                access_hash=file_id.access_hash,
+                file_reference=file_id.file_reference,
+                thumb_size=file_id.thumbnail_size,
+            )
+        else:
+            return raw.types.InputDocumentFileLocation(
+                id=file_id.media_id,
+                access_hash=file_id.access_hash,
+                file_reference=file_id.file_reference,
+                thumb_size=file_id.thumbnail_size,
+            )
+
+    async def get_file(
         self,
-        all_failed_offsets,
-        bad_bots,
-        ranges,
-        assigns,
-        fid_map,
-        final,
-        cidx=None,
+        offset_bytes: int,
+        first_part_cut: int,
+        last_part_cut: int,
+        part_count: int,
+        max_retries=5,
     ):
-        pool = cidx or list(self.clients.keys())
-        retry_round = 0
-        all_bad_mode = False
-        while all_failed_offsets:
-            retry_round += 1
-            await sleep(1)
+        index = min(self.work_loads, key=self.work_loads.get)
+        client = self.clients[index]
 
-            good_bots = sorted(
-                [i for i in pool if i not in bad_bots],
-                key=lambda i: self.work_loads.get(i, 0),
-            )
-            if not good_bots:
-                fallback = max(bad_bots)
-                LOGGER.warning(
-                    f"HypertgDL retry: all bots bad, "
-                    f"falling back to {self.clients[fallback].me.username}"
-                )
-                good_bots = [fallback]
-                all_bad_mode = True
+        self.work_loads[index] += 1
+        current_retry = 0
 
-            if retry_round > self._MAX_RETRIES and not all_bad_mode:
-                break
-            if all_bad_mode and retry_round > self._MAX_RETRIES + 2:
-                LOGGER.warning(
-                    f"HypertgDL retry: {len(all_failed_offsets)} offsets still failed "
-                    f"after all_bad_mode rounds, giving up"
-                )
-                break
+        try:
+            while current_retry < max_retries:
+                try:
+                    if self._cancel_event.is_set():
+                        raise CancelledError("Download cancelled")
 
-            range_buckets = {i: [] for i in range(len(ranges))}
-            for off in all_failed_offsets:
-                for i, (s, e) in enumerate(ranges):
-                    if s <= off < e:
-                        range_buckets[i].append(off)
-                        break
-                else:
-                    LOGGER.error(f"HypertgDL retry: offset {off} outside all ranges")
-                    range_buckets[0].append(off)
+                    file_id = await self.get_file_id(client, index)
+                    media_session, location = await gather(
+                        self.generate_media_session(client, file_id, index),
+                        self.get_location(file_id),
+                    )
 
-            LOGGER.warning(
-                f"HypertgDL retry round {retry_round}: "
-                f"{len(all_failed_offsets)} failed offsets"
-                f"{' (bad bots: ' + str(bad_bots) + ')' if bad_bots else ''}"
-            )
+                    current_part = 1
+                    current_offset = offset_bytes
 
-            sorted_buckets = sorted(
-                [(i, offs) for i, offs in range_buckets.items() if offs],
-                key=lambda x: x[0],
-            )
-            good_bot_cycle = cycle(good_bots) if good_bots else None
-            bot_task_map = []
-            still_failed = set()
-            for i, bucket in sorted_buckets:
-                bot_idx = assigns[i]
-                if bot_idx in bad_bots:
-                    if not good_bot_cycle:
-                        still_failed |= set(bucket)
-                        continue
-                    bot_idx = next(good_bot_cycle)
+                    while current_part <= part_count:
+                        if self._cancel_event.is_set():
+                            raise CancelledError("Download cancelled")
 
-                if bot_idx not in fid_map:
-                    try:
-                        fid_map[bot_idx] = await self._fetch_ref(
-                            bot_idx, self.clients[bot_idx]
+                        try:
+                            r = await wait_for(
+                                media_session.invoke(
+                                    raw.functions.upload.GetFile(
+                                        location=location,
+                                        offset=current_offset,
+                                        limit=self.chunk_size,
+                                    ),
+                                ),
+                                timeout=30,
+                            )
+
+                            if isinstance(r, raw.types.upload.File):
+                                chunk = r.bytes
+
+                                if not chunk:
+                                    break
+
+                                if part_count == 1:
+                                    yield chunk[first_part_cut:last_part_cut]
+                                elif current_part == 1:
+                                    yield chunk[first_part_cut:]
+                                elif current_part == part_count:
+                                    yield chunk[:last_part_cut]
+                                else:
+                                    yield chunk
+
+                                current_part += 1
+                                current_offset += self.chunk_size
+                                self._processed_bytes += len(chunk)
+                            else:
+                                raise ValueError(f"Unexpected response: {r}")
+
+                        except (FloodWait, AsyncTimeoutError, ConnectionError) as e:
+                            if isinstance(e, FloodWait):
+                                await sleep(e.value + 1)
+                            else:
+                                await sleep(1)
+                            continue
+
+                    if current_part <= part_count:
+                        raise ValueError(
+                            f"Incomplete download: got {current_part-1} of {part_count} parts"
                         )
-                    except Exception:
-                        bad_bots.add(bot_idx)
-                        still_failed |= set(bucket)
-                        continue
-                retry_start = min(bucket)
-                retry_end = min(max(bucket) + self.chunk_size, self.file_size)
-                task = create_task(
-                    self._part(
-                        retry_start,
-                        retry_end,
-                        final,
-                        bot_idx,
-                        fid_map[bot_idx],
-                        self.chunk_size,
-                    )
-                )
-                bot_task_map.append((bot_idx, bucket, task))
+                    break
 
-            if not bot_task_map:
-                LOGGER.error("HypertgDL retry: no bots available for retry")
-                break
+                except (AsyncTimeoutError, ConnectionError, AttributeError):
+                    current_retry += 1
+                    if current_retry >= max_retries:
+                        raise
+                    await sleep(current_retry * 2)
 
-            retry_results = await gather(
-                *[t for _, _, t in bot_task_map], return_exceptions=True
-            )
-            for (bot_idx, bucket, _), r in zip(bot_task_map, retry_results):
-                if isinstance(r, BaseException):
-                    LOGGER.error(
-                        f"HypertgDL retry ci={bot_idx} "
-                        f"client={self.clients[bot_idx].me.username} "
-                        f"failed: {r}"
-                    )
-                    if hasattr(r, "failed_offsets") and r.failed_offsets:
-                        still_failed |= r.failed_offsets
-                    else:
-                        still_failed |= set(bucket)
-                    bad_bots.add(bot_idx)
-                elif isinstance(r, set) and r:
-                    still_failed |= r
-                    bad_bots.add(bot_idx)
-            all_failed_offsets = still_failed
+        finally:
+            self.work_loads[index] -= 1
 
-        if all_failed_offsets:
-            n_bad = len(bad_bots)
-            bad_detail = (
-                f" ({n_bad} bot{'s' if n_bad != 1 else ''} exhausted)" if n_bad else ""
-            )
-            LOGGER.error(
-                f"HypertgDL {len(all_failed_offsets)} offsets still failed "
-                f"after {self._MAX_RETRIES} retry rounds — file may be incomplete"
-                f"{bad_detail}"
-            )
+    async def progress_callback(self, progress, progress_args):
+        if not progress:
+            return
 
-        return all_failed_offsets, bad_bots
-
-    async def handle_download(self):
-        self._cancel.clear()
-        self._obj._processed_bytes = 0
-        await makedirs(self.directory, exist_ok=True)
-        final = os.path.abspath(
-            sub("\\\\", "/", os.path.join(self.directory, self.file_name))
-        )
-
-        mode = getattr(self._listener, "transmission_mode", "bot")
-        bot_clients = {k: v for k, v in self.clients.items() if k > 0}
-        user_clients = {k: v for k, v in self.clients.items() if k < 0}
-
-        if mode == "bot":
-            use_clients = bot_clients
-        elif mode == "user":
-            use_clients = user_clients
-        else:
-            use_clients = self.clients
-
-        if not use_clients:
-            LOGGER.error(f"HypertgDL no clients for mode {mode}")
-            return None
-
-        use_count = min(self.num_parts, len(use_clients))
-
-        if mode == "both" and bot_clients and user_clients:
-            n_bot = min(len(bot_clients), max(1, use_count // 2))
-            n_user = min(len(user_clients), use_count - n_bot)
-            cidx = await _pick_clients(self.work_loads, bot_clients, n_bot)
-            cidx.extend(await _pick_clients(self.work_loads, user_clients, n_user))
-        else:
-            cidx = await _pick_clients(self.work_loads, use_clients, use_count)
-
-        n_use = len(cidx)
-        min_part = 1 * MB
-        n_parts = (
-            min(n_use, max(1, self.file_size // min_part))
-            if self.file_size >= min_part
-            else 1
-        )
-        psz = self.file_size // n_parts if n_parts > 0 else self.file_size
-        ranges = [(i * psz, min((i + 1) * psz, self.file_size)) for i in range(n_parts)]
-        assigns = [cidx[i % n_use] for i in range(n_parts)]
-
-        unique_clients = set(assigns)
-        fid_map = {}
-        try:
-            for ci in unique_clients:
-                fid_map[ci] = await self._fetch_ref(ci, self.clients[ci])
-        except Exception as e:
-            LOGGER.error(f"HypertgDL ref fail: {e}")
-            return None
-
-        first_fid = fid_map[assigns[0]]
-        try:
-            await self._warmup(unique_clients, first_fid.dc_id)
-        except Exception as e:
-            LOGGER.warning(f"HypertgDL warmup err: {e}")
-
-        self._tasks = []
-        try:
-            fd = await to_thread(os.open, final, os.O_WRONLY | os.O_CREAT)
+        while not self._cancel_event.is_set():
             try:
-                await to_thread(os.ftruncate, fd, self.file_size)
-            finally:
-                await to_thread(os.close, fd)
-
-            all_failed_offsets = set()
-            for i, (s, e) in enumerate(ranges):
-                self._tasks.append(
-                    create_task(
-                        self._part(
-                            s,
-                            e,
-                            final,
-                            assigns[i],
-                            fid_map[assigns[i]],
-                            self.chunk_size,
-                        )
+                if callable(progress):
+                    await progress(
+                        self._processed_bytes, self.file_size, *progress_args
                     )
-                )
+                await sleep(1)
+            except (CancelledError, StopTransmission):
+                break
+            except Exception:
+                await sleep(1)
 
-            results = await gather(*self._tasks, return_exceptions=True)
-            bad_bots = set()
-            for i, r in enumerate(results):
-                if isinstance(r, BaseException):
-                    LOGGER.error(f"HypertgDL part {i} failed: {r}")
-                    bad_bots.add(assigns[i])
-                    if hasattr(r, "failed_offsets") and r.failed_offsets:
-                        all_failed_offsets.update(r.failed_offsets)
-                    else:
-                        s, e = ranges[i]
-                        LOGGER.warning(
-                            f"HypertgDL part {i} missing failed_offsets — "
-                            f"retrying full range {s}-{e}"
-                        )
-                        all_failed_offsets.update(range(s, e, self.chunk_size))
-                elif isinstance(r, set) and r:
-                    all_failed_offsets.update(r)
-                    bad_bots.add(assigns[i])
-            all_failed_offsets, bad_bots = await self._retry_failed_offsets(
-                all_failed_offsets,
-                bad_bots,
-                ranges,
-                assigns,
-                fid_map,
-                final,
-                cidx=cidx,
+    async def single_part(self, start, end, part_index, max_retries=3):
+        until_bytes, from_bytes = min(end, self.file_size - 1), start
+
+        offset = from_bytes - (from_bytes % self.chunk_size)
+        first_part_cut = from_bytes - offset
+        last_part_cut = until_bytes % self.chunk_size + 1
+
+        part_count = ceil(until_bytes / self.chunk_size) - floor(
+            offset / self.chunk_size
+        )
+        part_file_path = ospath.join(
+            self.directory, f"{self.file_name}.temp.{part_index:02d}"
+        )
+
+        for attempt in range(max_retries):
+            try:
+                async with aiopen(part_file_path, "wb") as f:
+                    async for chunk in self.get_file(
+                        offset, first_part_cut, last_part_cut, part_count
+                    ):
+                        if self._cancel_event.is_set():
+                            raise CancelledError("Download cancelled")
+                        await f.write(chunk)
+                return part_index, part_file_path
+            except (AsyncTimeoutError, ConnectionError):
+                if attempt == max_retries - 1:
+                    raise
+                await sleep((attempt + 1) * 2)
+                self._processed_bytes = 0
+
+    async def handle_download(self, progress, progress_args):
+        self._cancel_event.clear()
+
+        await makedirs(self.directory, exist_ok=True)
+        temp_file_path = (
+            ospath.abspath(
+                sub("\\\\", "/", ospath.join(self.directory, self.file_name))
             )
+            + ".temp"
+        )
 
-            return final
-        except FloodWait:
-            raise
+        num_parts = min(self.num_parts, max(1, self.file_size // (10 * 1024 * 1024)))
+
+        if self.file_size < 10 * 1024 * 1024:
+            num_parts = 1
+
+        part_size = self.file_size // num_parts if num_parts > 0 else self.file_size
+        ranges = [
+            (i * part_size, min((i + 1) * part_size - 1, self.file_size - 1))
+            for i in range(num_parts)
+        ]
+
+        tasks = []
+        prog_task = None
+
+        try:
+            for i, (start, end) in enumerate(ranges):
+                tasks.append(create_task(self.single_part(start, end, i)))
+
+            if progress:
+                prog_task = create_task(self.progress_callback(progress, progress_args))
+
+            results = await gather(*tasks)
+
+            async with aiopen(temp_file_path, "wb") as temp_file:
+                for _, part_file_path in sorted(results, key=lambda x: x[0]):
+                    try:
+                        async with aiopen(part_file_path, "rb") as part_file:
+                            while True:
+                                chunk = await part_file.read(8 * 1024 * 1024)
+                                if not chunk:
+                                    break
+                                await temp_file.write(chunk)
+                        await remove(part_file_path)
+                    except Exception as e:
+                        LOGGER.error(
+                            f"Error processing part file {part_file_path}: {e}"
+                        )
+                        raise
+
+            if prog_task and not prog_task.done():
+                prog_task.cancel()
+
+            file_path = ospath.splitext(temp_file_path)[0]
+            await move(temp_file_path, file_path)
+
+            return file_path
+
+        except FloodWait as fw:
+            raise fw
         except (CancelledError, StopTransmission):
             return None
         except Exception as e:
-            LOGGER.error(f"HypertgDL: {e}")
+            LOGGER.error(f"HyperDL Error: {e}")
             return None
         finally:
-            self._cancel.set()
-            for t in self._tasks:
-                if not t.done():
-                    t.cancel()
-            if self._tasks:
-                await gather(*self._tasks, return_exceptions=True)
-            async with _load_lock:
-                for k in cidx:
-                    self.work_loads[k] = max(0, self.work_loads.get(k, 0) - 1)
-            for s in self._cdn_sessions.values():
+            self._cancel_event.set()
+            if prog_task and not prog_task.done():
+                prog_task.cancel()
+
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+
+            for i in range(len(ranges)):
+                part_path = ospath.join(
+                    self.directory, f"{self.file_name}.temp.{i:02d}"
+                )
                 try:
-                    if s.is_connected:
-                        await s.stop()
+                    if ospath.exists(part_path):
+                        await remove(part_path)
                 except Exception:
                     pass
-            self._cdn_sessions.clear()
-            self._cdn_info.clear()
-            await self._close_all()
 
-    async def download_media(self, message, file_name="downloads/", dump_chat=None):
+    @staticmethod
+    async def get_extension(file_type, mime_type):
+        if file_type in PHOTO_TYPES:
+            return ".jpg"
+
+        if mime_type:
+            extension = guess_extension(mime_type)
+            if extension:
+                return extension
+
+        if file_type == FileType.VOICE:
+            return ".ogg"
+        elif file_type in (FileType.VIDEO, FileType.ANIMATION, FileType.VIDEO_NOTE):
+            return ".mp4"
+        elif file_type == FileType.DOCUMENT:
+            return ".bin"
+        elif file_type == FileType.STICKER:
+            return ".webp"
+        elif file_type == FileType.AUDIO:
+            return ".mp3"
+        else:
+            return ".bin"
+
+    async def download_media(
+        self,
+        message,
+        file_name="downloads/",
+        progress=None,
+        progress_args=(),
+        dump_chat=None,
+    ):
         try:
-            if dump_chat and not isinstance(dump_chat, int):
-                try:
-                    dump_chat = int(dump_chat)
-                except (ValueError, TypeError):
-                    dump_chat = None
-            if dump_chat and dump_chat == message.chat.id:
-                dump_chat = None
+            if isinstance(dump_chat, str) and dump_chat.lstrip("-").isdigit():
+                dump_chat = int(dump_chat)
+
             if dump_chat:
-                try:
-                    self.message = await TgClient.bot.copy_message(
-                        chat_id=dump_chat,
-                        from_chat_id=message.chat.id,
-                        message_id=message.id,
-                        disable_notification=True,
-                    )
-                except Exception as e:
-                    LOGGER.warning(
-                        f"HypertgDL copy fail: {e} (from={message.chat.id} to={dump_chat})"
-                    )
-                    raise RuntimeError(f"Cannot copy to dump chat: {e}") from e
+                copy_clients = []
+                if TgClient.user is not None:
+                    copy_clients.append(TgClient.user)
+                copy_clients.append(TgClient.bot)
+                last_error = None
+                for copy_client in copy_clients:
+                    try:
+                        await copy_client.get_chat(dump_chat)
+                        copied = await copy_client.copy_message(
+                            chat_id=dump_chat,
+                            from_chat_id=message.chat.id,
+                            message_id=message.id,
+                            disable_notification=True,
+                        )
+                        copied = await copy_client.get_messages(
+                            chat_id=dump_chat, message_ids=copied.id
+                        )
+                        await self.get_media_type(copied)
+
+                        helper_ok = False
+                        for helper in self.clients.values():
+                            try:
+                                helper_msg = await helper.get_messages(
+                                    chat_id=dump_chat, message_ids=copied.id
+                                )
+                                await self.get_media_type(helper_msg)
+                                helper_ok = True
+                                break
+                            except Exception as e:
+                                last_error = e
+                        if not helper_ok:
+                            raise ValueError(
+                                "copied media is not visible as media to any helper bot"
+                            )
+
+                        self.message = copied
+                        LOGGER.info(
+                            f"Copied Telegram media to dump chat {dump_chat} as "
+                            f"message {self.message.id} using "
+                            f"{getattr(copy_client.me, 'username', 'user')}"
+                        )
+                        break
+                    except Exception as e:
+                        last_error = e
+                        LOGGER.warning(
+                            f"Failed to prepare dump media {dump_chat} using "
+                            f"{getattr(copy_client.me, 'username', 'user')}: {e}"
+                        )
+                if self.message is None:
+                    raise last_error or ValueError(f"Cannot access dump chat {dump_chat}")
+                await sleep(3)
+
             self.dump_chat = dump_chat or message.chat.id
             self.message = self.message or message
-            self.media = self._media_of(self.message)
-            media = self.media
-            fid_str = media if isinstance(media, str) else media.file_id
-            fid_obj = FileId.decode(fid_str)
-            ftype = fid_obj.file_type
-            mname = media.file_name if hasattr(media, "file_name") else ""
-            self.file_size = media.file_size if hasattr(media, "file_size") else 0
-            mime = media.mime_type if hasattr(media, "mime_type") else "image/jpeg"
-            dt = media.date if hasattr(media, "date") else None
-            self.directory, self.file_name = os.path.split(file_name)
-            self.file_name = self.file_name or mname or ""
-            if not os.path.isabs(self.file_name):
+            media = await self.get_media_type(self.message)
+
+            file_id_str = media if isinstance(media, str) else media.file_id
+            file_id_obj = FileId.decode(file_id_str)
+
+            file_type = file_id_obj.file_type
+            media_file_name = getattr(media, "file_name", "")
+            self.file_size = getattr(media, "file_size", 0)
+            mime_type = getattr(media, "mime_type", "image/jpeg")
+            date = getattr(media, "date", None)
+
+            self.directory, self.file_name = ospath.split(file_name)
+            self.file_name = self.file_name or media_file_name or ""
+
+            if not ospath.isabs(self.file_name):
                 self.directory = Path(argv[0]).parent / (
                     self.directory or self.download_dir
                 )
-            if not self.file_name:
-                ext = self._ext(ftype, mime)
-                self.file_name = (
-                    f"{FileType(ftype).name.lower()}_"
-                    f"{(dt or datetime.now()).strftime('%Y-%m-%d_%H-%M-%S')}_"
-                    f"{MsgId()}{ext}"
-                )
-            return await self.handle_download()
-        except Exception as e:
-            LOGGER.error(f"HypertgDL download_media: {e}")
-            raise
 
-    @staticmethod
-    def _ext(ft, mime):
-        if ft in PHOTO_TYPES:
-            return ".jpg"
-        if mime:
-            e = guess_extension(mime)
-            if e:
-                return e
-        return {
-            FileType.VOICE: ".ogg",
-            FileType.VIDEO: ".mp4",
-            FileType.ANIMATION: ".mp4",
-            FileType.VIDEO_NOTE: ".mp4",
-            FileType.AUDIO: ".mp3",
-            FileType.STICKER: ".webp",
-        }.get(ft, ".bin")
+            if not self.file_name:
+                extension = await self.get_extension(file_type, mime_type)
+                self.file_name = f"{FileType(file_id_obj.file_type).name.lower()}_{(date or datetime.now()).strftime('%Y-%m-%d_%H-%M-%S')}_{MsgId()}{extension}"
+
+            return await self.handle_download(progress, progress_args)
+
+        except Exception as e:
+            LOGGER.error(f"Download media error: {e}")
+            raise

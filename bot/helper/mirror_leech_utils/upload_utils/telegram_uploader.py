@@ -1,4 +1,4 @@
-from asyncio import ensure_future, gather, sleep
+from asyncio import sleep
 from logging import getLogger
 from os import path as ospath, walk
 from re import match as re_match, sub as re_sub
@@ -7,9 +7,12 @@ from time import time
 from aioshutil import rmtree
 from natsort import natsorted
 from PIL import Image
-from pyrogram import StopTransmission, raw
-from pyrogram.errors import BadRequest, FloodPremiumWait, FloodWait, RPCError
+from pyrogram.errors import BadRequest, FloodWait, RPCError
 
+try:
+    from pyrogram.errors import FloodPremiumWait
+except ImportError:
+    FloodPremiumWait = FloodWait
 from aiofiles.os import (
     path as aiopath,
     remove,
@@ -19,6 +22,13 @@ from pyrogram.types import (
     InputMediaDocument,
     InputMediaPhoto,
     InputMediaVideo,
+)
+from tenacity import (
+    RetryError,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
 )
 
 from ....core.config_manager import Config
@@ -36,7 +46,6 @@ from ...ext_utils.media_utils import (
     get_md5_hash,
 )
 from ...telegram_helper.message_utils import delete_message
-from ...ext_utils.hyperup_utils import HypertgUpload
 
 LOGGER = getLogger(__name__)
 
@@ -66,9 +75,18 @@ class TelegramUploader:
         self._is_private = False
         self._sent_msg = None
         self._log_msg = None
-        self._user_session = self._listener.transmission_mode in ("user", "both")
-        self._hu: HypertgUpload | None = None
+        self._user_session = self._listener.transmission_mode == "user"
         self._error = ""
+
+    async def _upload_progress(self, current, _):
+        if self._listener.is_cancelled:
+            if self._user_session:
+                TgClient.user.stop_transmission()
+            else:
+                self._listener.client.stop_transmission()
+        chunk_size = current - self._last_uploaded
+        self._last_uploaded = current
+        self._processed_bytes += chunk_size
 
     async def _user_settings(self):
         settings_map = {
@@ -91,8 +109,6 @@ class TelegramUploader:
             self._thumb = None
 
     async def _msg_to_reply(self):
-        if self._user_session and TgClient.user is None:
-            self._user_session = False
         if self._listener.up_dest:
             msg_link = (
                 self._listener.message.link if self._listener.is_super_chat else ""
@@ -159,48 +175,35 @@ class TelegramUploader:
             self._sent_msg = self._listener.message
         return True
 
-    async def _upload_progress(self, current, _):
-        if self._listener.is_cancelled:
-            if self._user_session:
-                TgClient.user.stop_transmission()
-            else:
-                self._listener.client.stop_transmission()
-        chunk_size = current - self._last_uploaded
-        self._last_uploaded = current
-        self._processed_bytes += chunk_size
-
     async def _prepare_file(self, pre_file_, dirpath):
         cap_file_ = file_ = pre_file_
-        lprefix = self._lprefix
-        lsuffix = self._lsuffix
-        lcaption = self._lcaption
 
-        if lprefix:
-            cap_file_ = lprefix.replace(r"\s", " ") + file_
-            lprefix = re_sub(r"<.*?>", "", lprefix).replace(r"\s", " ")
-            if not file_.startswith(lprefix):
-                file_ = f"{lprefix}{file_}"
+        if self._lprefix:
+            cap_file_ = self._lprefix.replace(r"\s", " ").rstrip() + " " + file_
+            self._lprefix = re_sub(r"<.*?>", "", self._lprefix).replace(r"\s", " ").rstrip()
+            if not file_.startswith(self._lprefix):
+                file_ = f"{self._lprefix} {file_}"
 
-        if lsuffix:
+        if self._lsuffix:
             name, ext = ospath.splitext(cap_file_)
-            cap_file_ = name + lsuffix.replace(r"\s", " ") + ext
-            lsuffix = re_sub(r"<.*?>", "", lsuffix).replace(r"\s", " ")
+            self._lsuffix = re_sub(r"<.*?>", "", self._lsuffix).replace(r"\s", " ").lstrip()
+            cap_file_ = name + " " + self._lsuffix + ext
 
         cap_mono = (
             f"<{Config.LEECH_FONT}>{cap_file_}</{Config.LEECH_FONT}>"
             if Config.LEECH_FONT
             else cap_file_
         )
-        if lcaption:
-            lcaption = re_sub(
+        if self._lcaption:
+            self._lcaption = re_sub(
                 r"(\\\||\\\{|\\\}|\\s)",
                 lambda m: {r"\|": "%%", r"\{": "&%&", r"\}": "$%$", r"\s": " "}[
                     m.group(0)
                 ],
-                lcaption,
+                self._lcaption,
             )
 
-            parts = lcaption.split("|")
+            parts = self._lcaption.split("|")
             parts[0] = re_sub(
                 r"\{([^}]+)\}", lambda m: f"{{{m.group(1).lower()}}}", parts[0]
             )
@@ -232,7 +235,7 @@ class TelegramUploader:
                 cap_mono,
             )
 
-        if len(file_) > 60:
+        if len(file_) > 255:
             if is_archive(file_):
                 name = get_base_name(file_)
                 ext = file_.split(name, 1)[1]
@@ -245,20 +248,20 @@ class TelegramUploader:
             else:
                 name = file_
                 ext = ""
-            if lsuffix:
-                ext = f"{lsuffix}{ext}"
-            name = name[: 64 - len(ext)]
+            if self._lsuffix:
+                ext = f" {self._lsuffix}{ext}"
+            name = name[: 255 - len(ext)]
             file_ = f"{name}{ext}"
-        elif lsuffix:
+        elif self._lsuffix:
             name, ext = ospath.splitext(file_)
-            file_ = f"{name}{lsuffix}{ext}"
+            file_ = f"{name} {self._lsuffix}{ext}"
 
-        old_path = ospath.join(dirpath, pre_file_)
-        new_path = ospath.join(dirpath, file_)
-        if old_path != new_path:
-            await rename(old_path, new_path)
+        if pre_file_ != file_:
+            new_path = ospath.join(dirpath, file_)
+            await rename(self._up_path, new_path)
+            self._up_path = new_path
 
-        return new_path, cap_mono
+        return cap_mono
 
     def _get_input_media(self, subkey, key):
         rlist = []
@@ -297,7 +300,7 @@ class TelegramUploader:
 
     async def _send_media_group(self, subkey, key, msgs):
         for index, msg in enumerate(msgs):
-            if self._listener.transmission_mode == "both" or not self._user_session:
+            if self._listener.hybrid_leech or not self._user_session:
                 msgs[index] = await self._listener.client.get_messages(
                     chat_id=msg[0], message_ids=msg[1]
                 )
@@ -335,35 +338,12 @@ class TelegramUploader:
             if not self._listener.is_cancelled:
                 LOGGER.error(f"Failed To Send in BotPM:\n{str(err)}")
 
-    async def _upload_file_task(self, file_, f_path, dirpath):
-        up_path = None
-        try:
-            up_path, cap_mono = await self._prepare_file(file_, dirpath)
-            sent = await self._upload_file(cap_mono, file_, up_path)
-            if sent and not self._is_corrupted:
-                if self._listener.is_super_chat or self._listener.up_dest:
-                    if not self._is_private:
-                        self._msgs_dict[sent.link] = file_
-            return sent
-        except StopTransmission:
-            return None
-        except Exception as err:
-            LOGGER.error(f"{err}. Path: {f_path}", exc_info=True)
-            self._error = str(err)
-            self._corrupted += 1
-            return None
-        finally:
-            path_to_clean = up_path or f_path
-            if not self._listener.is_cancelled and await aiopath.exists(path_to_clean):
-                await remove(path_to_clean)
-
     async def upload(self):
         await self._user_settings()
         res = await self._msg_to_reply()
         if not res:
             return
         is_log_del = False
-        upload_tasks = []
         for dirpath, _, files in natsorted(await sync_to_async(walk, self._path)):
             if dirpath.strip().endswith("/yt-dlp-thumb"):
                 continue
@@ -373,21 +353,22 @@ class TelegramUploader:
                 continue
             for file_ in natsorted(files):
                 self._error = ""
-                f_path = ospath.join(dirpath, file_)
-                if not await aiopath.exists(f_path):
-                    LOGGER.error(f"{f_path} not exists! Continue uploading!")
+                self._up_path = f_path = ospath.join(dirpath, file_)
+                if not await aiopath.exists(self._up_path):
+                    LOGGER.error(f"{self._up_path} not exists! Continue uploading!")
                     continue
                 try:
-                    f_size = await aiopath.getsize(f_path)
+                    f_size = await aiopath.getsize(self._up_path)
                     self._total_files += 1
                     if f_size == 0:
                         LOGGER.error(
-                            f"{f_path} size is zero, telegram don't upload zero size files"
+                            f"{self._up_path} size is zero, telegram don't upload zero size files"
                         )
                         self._corrupted += 1
                         continue
                     if self._listener.is_cancelled:
                         return
+                    cap_mono = await self._prepare_file(file_, dirpath)
                     if self._last_msg_in_group:
                         group_lists = [
                             x for v in self._media_dict.values() for x in v.keys()
@@ -410,35 +391,36 @@ class TelegramUploader:
                                 chat_id=self._sent_msg.chat.id,
                                 message_ids=self._sent_msg.id,
                             )
-                    elif (
-                        not self._user_session
-                        and f_size > 2097152000
-                        and TgClient.user is not None
-                    ):
-                        user_msg = await TgClient.user.get_messages(
-                            chat_id=self._sent_msg.chat.id,
-                            message_ids=self._sent_msg.id,
-                        )
-                        if user_msg is not None:
-                            self._user_session = True
-                            self._sent_msg = user_msg
                     self._last_msg_in_group = False
-                    task = ensure_future(self._upload_file_task(file_, f_path, dirpath))
-                    upload_tasks.append(task)
+                    self._last_uploaded = 0
+                    await self._upload_file(cap_mono, file_, f_path)
+                    if self._log_msg and not is_log_del and Config.CLEAN_LOG_MSG:
+                        await delete_message(self._log_msg)
+                        is_log_del = True
                     if self._listener.is_cancelled:
                         return
+                    if (
+                        not self._is_corrupted
+                        and (self._listener.is_super_chat or self._listener.up_dest)
+                        and not self._is_private
+                    ):
+                        self._msgs_dict[self._sent_msg.link] = file_
+                    await sleep(1)
                 except Exception as err:
-                    LOGGER.error(f"{err}. Path: {f_path}", exc_info=True)
+                    if isinstance(err, RetryError):
+                        LOGGER.info(
+                            f"Total Attempts: {err.last_attempt.attempt_number}"
+                        )
+                        err = err.last_attempt.exception()
+                    LOGGER.error(f"{err}. Path: {self._up_path}", exc_info=True)
                     self._error = str(err)
                     self._corrupted += 1
                     if self._listener.is_cancelled:
                         return
-        if upload_tasks:
-            results = await gather(*upload_tasks, return_exceptions=True)
-            for r in results:
-                if isinstance(r, Exception):
-                    LOGGER.error(f"Upload task error: {r}")
-            await sleep(1)
+                if not self._listener.is_cancelled and await aiopath.exists(
+                    self._up_path
+                ):
+                    await remove(self._up_path)
         for key, value in list(self._media_dict.items()):
             for subkey, msgs in list(value.items()):
                 if len(msgs) > 1:
@@ -450,9 +432,6 @@ class TelegramUploader:
                         )
         if self._listener.is_cancelled:
             return
-        if self._log_msg and not is_log_del and Config.CLEAN_LOG_MSG:
-            await delete_message(self._log_msg)
-            is_log_del = True
         if self._total_files == 0:
             await self._listener.on_upload_error(
                 "No files to upload. In case you have filled EXCLUDED_EXTENSIONS, then check if all files have those extensions or not."
@@ -469,158 +448,11 @@ class TelegramUploader:
         )
         return
 
-    async def _hyperul_upload(
-        self,
-        cap_mono,
-        file,
-        thumb,
-        key,
-        f_path=None,
-        duration=0,
-        width=0,
-        height=0,
-        artist="",
-        title="",
-    ):
-        f_path = f_path or self._up_path
-        if not await aiopath.exists(f_path):
-            raise FileNotFoundError(f"File not found: {f_path}")
-        up_size = await aiopath.getsize(f_path)
-
-        if up_size > (TgClient.MAX_SPLIT_SIZE if self._user_session else 2097152000):
-            if not self._user_session and TgClient.user is not None:
-                user_msg = await TgClient.user.get_messages(
-                    chat_id=self._sent_msg.chat.id,
-                    message_ids=self._sent_msg.id,
-                )
-                if user_msg is not None:
-                    self._user_session = True
-                    self._sent_msg = user_msg
-
-        if Config.USE_HYPER and up_size > 10 * 1024 * 1024:
-            try:
-                if self._hu is None:
-                    self._hu = HypertgUpload(self)
-
-                media_type = {
-                    "videos": "video",
-                    "audios": "audio",
-                    "documents": "document",
-                    "photos": "photo",
-                }[key]
-                attributes = []
-                if key == "videos":
-                    attributes.append(
-                        raw.types.DocumentAttributeVideo(
-                            duration=duration,
-                            w=width,
-                            h=height,
-                            supports_streaming=True,
-                        )
-                    )
-                elif key == "audios":
-                    attributes.append(
-                        raw.types.DocumentAttributeAudio(
-                            duration=duration,
-                            performer=artist,
-                            title=title,
-                        )
-                    )
-                if key in ("videos", "audios", "documents"):
-                    attributes.append(
-                        raw.types.DocumentAttributeFilename(file_name=file)
-                    )
-
-                sent = await self._hu.upload(
-                    target_client=self._sent_msg._client,
-                    target_chat_id=self._sent_msg.chat.id,
-                    file_path=f_path,
-                    dump_chat_id=0,
-                    media_type=media_type,
-                    attributes=attributes,
-                    thumb_path=thumb if thumb and thumb != "none" else None,
-                    caption=cap_mono,
-                    reply_to_message_id=self._sent_msg.id,
-                )
-                LOGGER.info(f"HypertgUL uploaded {file}")
-                return sent
-            except Exception as e:
-                LOGGER.warning(
-                    f"HypertgUL fail for {file}, "
-                    f"falling back to reply path: {type(e).__name__}: {e}"
-                )
-
-        sent = None
-        try:
-            if key == "videos":
-                sent = await self._sent_msg.reply_video(
-                    video=f_path,
-                    caption=cap_mono,
-                    duration=duration or 0,
-                    width=width or 480,
-                    height=height or 320,
-                    thumb=thumb if thumb and thumb != "none" else None,
-                    supports_streaming=True,
-                    disable_notification=True,
-                    progress=self._upload_progress,
-                )
-            elif key == "audios":
-                sent = await self._sent_msg.reply_audio(
-                    audio=f_path,
-                    caption=cap_mono,
-                    duration=duration or 0,
-                    performer=artist or "",
-                    title=title or "",
-                    thumb=thumb if thumb and thumb != "none" else None,
-                    disable_notification=True,
-                    progress=self._upload_progress,
-                )
-            elif key == "documents":
-                sent = await self._sent_msg.reply_document(
-                    document=f_path,
-                    caption=cap_mono,
-                    thumb=thumb if thumb and thumb != "none" else None,
-                    disable_notification=True,
-                    progress=self._upload_progress,
-                )
-            else:
-                sent = await self._sent_msg.reply_photo(
-                    photo=f_path,
-                    caption=cap_mono,
-                    disable_notification=True,
-                    progress=self._upload_progress,
-                )
-        except (FloodWait, FloodPremiumWait) as f:
-            LOGGER.warning(str(f))
-            await sleep(f.value * 1.3)
-            return await self._hyperul_upload(
-                cap_mono,
-                file,
-                thumb,
-                key,
-                f_path=f_path,
-                duration=duration,
-                width=width,
-                height=height,
-                artist=artist,
-                title=title,
-            )
-        except OSError as e:
-            LOGGER.warning(f"Transport error during upload: {e}")
-            raise
-        except BadRequest:
-            if key != "documents":
-                LOGGER.error(f"Retrying As Document. Path: {f_path}")
-                return await self._hyperul_upload(
-                    cap_mono,
-                    file,
-                    thumb,
-                    "documents",
-                    f_path=f_path,
-                )
-            raise
-        return sent
-
+    @retry(
+        wait=wait_exponential(multiplier=2, min=4, max=8),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type(Exception),
+    )
     async def _upload_file(self, cap_mono, file, o_path, force_document=False):
         if self._sent_msg is None:
             LOGGER.error("Cannot upload: _sent_msg is None")
@@ -645,7 +477,7 @@ class TelegramUploader:
         thumb = self._thumb
         self._is_corrupted = False
         try:
-            is_video, is_audio, is_image = await get_document_type(o_path)
+            is_video, is_audio, is_image = await get_document_type(self._up_path)
 
             if not is_image and thumb is None:
                 file_name = ospath.splitext(file)[0]
@@ -655,7 +487,7 @@ class TelegramUploader:
                 elif await aiopath.isfile(thumb_path.replace("/yt-dlp-thumb", "")):
                     thumb = thumb_path.replace("/yt-dlp-thumb", "")
                 elif is_audio and not is_video:
-                    thumb = await get_audio_thumbnail(o_path)
+                    thumb = await get_audio_thumbnail(self._up_path)
 
             if (
                 self._listener.as_doc
@@ -664,26 +496,32 @@ class TelegramUploader:
             ):
                 key = "documents"
                 if is_video and thumb is None:
-                    thumb = await get_video_thumbnail(o_path, None)
+                    thumb = await get_video_thumbnail(self._up_path, None)
 
                 if self._listener.is_cancelled:
                     return
                 if thumb == "none":
                     thumb = None
-                sent_msg = await self._hyperul_upload(
-                    cap_mono, file, thumb, key, f_path=o_path
+                self._sent_msg = await self._sent_msg.reply_document(
+                    document=self._up_path,
+                    quote=True,
+                    thumb=thumb,
+                    caption=cap_mono,
+                    disable_content_type_detection=True,
+                    disable_notification=True,
+                    progress=self._upload_progress,
                 )
             elif is_video:
                 key = "videos"
-                duration = (await get_media_info(o_path))[0]
+                duration = (await get_media_info(self._up_path))[0]
                 if thumb is None and self._listener.thumbnail_layout:
                     thumb = await get_multiple_frames_thumbnail(
-                        o_path,
+                        self._up_path,
                         self._listener.thumbnail_layout,
                         self._listener.screen_shots,
                     )
                 if thumb is None:
-                    thumb = await get_video_thumbnail(o_path, duration)
+                    thumb = await get_video_thumbnail(self._up_path, duration)
                 if thumb is not None and thumb != "none":
                     with Image.open(thumb) as img:
                         width, height = img.size
@@ -694,64 +532,69 @@ class TelegramUploader:
                     return
                 if thumb == "none":
                     thumb = None
-                sent_msg = await self._hyperul_upload(
-                    cap_mono,
-                    file,
-                    thumb,
-                    key,
-                    f_path=o_path,
+                self._sent_msg = await self._sent_msg.reply_video(
+                    video=self._up_path,
+                    quote=True,
+                    caption=cap_mono,
                     duration=duration,
                     width=width,
                     height=height,
+                    thumb=thumb,
+                    supports_streaming=True,
+                    disable_notification=True,
+                    progress=self._upload_progress,
                 )
             elif is_audio:
                 key = "audios"
-                duration, artist, title = await get_media_info(o_path)
+                duration, artist, title = await get_media_info(self._up_path)
                 if self._listener.is_cancelled:
                     return
                 if thumb == "none":
                     thumb = None
-                sent_msg = await self._hyperul_upload(
-                    cap_mono,
-                    file,
-                    thumb,
-                    key,
-                    f_path=o_path,
+                self._sent_msg = await self._sent_msg.reply_audio(
+                    audio=self._up_path,
+                    quote=True,
+                    caption=cap_mono,
                     duration=duration,
-                    artist=artist,
+                    performer=artist,
                     title=title,
+                    thumb=thumb,
+                    disable_notification=True,
+                    progress=self._upload_progress,
                 )
             else:
                 key = "photos"
                 if self._listener.is_cancelled:
                     return
-                sent_msg = await self._hyperul_upload(
-                    cap_mono, file, thumb, key, f_path=o_path
+                self._sent_msg = await self._sent_msg.reply_photo(
+                    photo=self._up_path,
+                    quote=True,
+                    caption=cap_mono,
+                    disable_notification=True,
+                    progress=self._upload_progress,
                 )
-
-            self._sent_msg = sent_msg
 
             if (
                 not self._listener.is_cancelled
                 and self._media_group
-                and (sent_msg.video or sent_msg.document)
+                and (self._sent_msg.video or self._sent_msg.document)
             ):
-                key = "documents" if sent_msg.document else "videos"
+                key = "documents" if self._sent_msg.document else "videos"
                 if match := re_match(r".+(?=\.0*\d+$)|.+(?=\.part\d+\..+$)", o_path):
                     pname = match.group(0)
                     if pname in self._media_dict[key].keys():
                         self._media_dict[key][pname].append(
-                            [sent_msg.chat.id, sent_msg.id]
+                            [self._sent_msg.chat.id, self._sent_msg.id]
                         )
                     else:
-                        self._media_dict[key][pname] = [[sent_msg.chat.id, sent_msg.id]]
+                        self._media_dict[key][pname] = [
+                            [self._sent_msg.chat.id, self._sent_msg.id]
+                        ]
                     msgs = self._media_dict[key][pname]
                     if len(msgs) == 10:
                         await self._send_media_group(pname, key, msgs)
                     else:
                         self._last_msg_in_group = True
-
-            self._sent_msg = sent_msg
 
             if self._sent_msg:
                 await self._copy_media()
@@ -765,8 +608,8 @@ class TelegramUploader:
                                 leech_dest = int(leech_dest)
                         await TgClient.bot.copy_message(
                             chat_id=leech_dest,
-                            from_chat_id=sent_msg.chat.id,
-                            message_id=sent_msg.id,
+                            from_chat_id=self._sent_msg.chat.id,
+                            message_id=self._sent_msg.id,
                         )
                     except Exception as e:
                         if not self._listener.is_cancelled:
@@ -784,9 +627,16 @@ class TelegramUploader:
                 and await aiopath.exists(thumb)
             ):
                 await remove(thumb)
-            return sent_msg
-        except StopTransmission:
-            raise
+        except (FloodWait, FloodPremiumWait) as f:
+            LOGGER.warning(str(f))
+            await sleep(f.value * 1.3)
+            if (
+                self._thumb is None
+                and thumb is not None
+                and await aiopath.exists(thumb)
+            ):
+                await remove(thumb)
+            return await self._upload_file(cap_mono, file, o_path)
         except Exception as err:
             if (
                 self._thumb is None
@@ -795,7 +645,10 @@ class TelegramUploader:
             ):
                 await remove(thumb)
             err_type = "RPCError: " if isinstance(err, RPCError) else ""
-            LOGGER.error(f"{err_type}{err}. Path: {o_path}", exc_info=True)
+            LOGGER.error(f"{err_type}{err}. Path: {self._up_path}", exc_info=True)
+            if isinstance(err, BadRequest) and key != "documents":
+                LOGGER.error(f"Retrying As Document. Path: {self._up_path}")
+                return await self._upload_file(cap_mono, file, o_path, True)
             raise err
 
     @property

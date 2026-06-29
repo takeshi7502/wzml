@@ -14,7 +14,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN test -x /wzvenv/bin/python || uv venv /wzvenv \
+RUN test -x /wzvenv/bin/python || uv venv --system-site-packages /wzvenv \
     && uv pip install --python /wzvenv/bin/python --no-cache-dir -r requirements.txt
 
 ENV PATH="/wzvenv/bin:${PATH}"

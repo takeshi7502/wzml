@@ -92,85 +92,6 @@ async def update_nzb_options():
             await sleep(2)
 
 
-async def _collection_count(collection):
-    try:
-        return await collection.count_documents({})
-    except Exception:
-        return 0
-
-
-async def _quota_count(collection):
-    try:
-        return await collection.count_documents({"USER_QUOTA": {"$exists": True}})
-    except Exception:
-        return 0
-
-
-async def _select_legacy_collection(group, current_part, prefer_quota=False):
-    try:
-        names = await database.db.list_collection_names()
-    except Exception as e:
-        LOGGER.warning("Legacy %s lookup failed: %s", group, e)
-        return current_part, False
-    prefix = f"{group}."
-    candidates = []
-    for name in names:
-        if not name.startswith(prefix):
-            continue
-        part = name.removeprefix(prefix)
-        if part == current_part:
-            continue
-        collection = database.db[name]
-        count = await _collection_count(collection)
-        quota = await _quota_count(collection) if prefer_quota else 0
-        if count:
-            candidates.append((quota, count, part))
-    if not candidates:
-        return current_part, False
-    candidates.sort(reverse=True)
-    quota, count, part = candidates[0]
-    LOGGER.info(
-        "Legacy %s data found in MongoDB collection %s.%s: count=%s%s; migrating/importing to current partition %s",
-        group,
-        group,
-        part,
-        count,
-        f", quota={quota}" if prefer_quota else "",
-        current_part,
-    )
-    return part, True
-
-
-async def _migrate_collection(group, source_part, target_part):
-    if source_part == target_part:
-        return 0
-    source = database.db[f"{group}.{source_part}"]
-    target = database.db[f"{group}.{target_part}"]
-    migrated = 0
-    async for row in source.find({}):
-        doc = row.copy()
-        doc_id = doc.get("_id")
-        if doc_id is None:
-            continue
-        await target.update_one({"_id": doc_id}, {"$setOnInsert": doc}, upsert=True)
-        migrated += 1
-    if migrated:
-        LOGGER.info(
-            "Migrated %s docs from %s.%s to %s.%s",
-            migrated,
-            group,
-            source_part,
-            group,
-            target_part,
-        )
-
-
-async def _migrate_legacy_pm_users(current_part):
-    current_count = await _collection_count(database.db[f"pm_users.{current_part}"])
-    legacy_part, found = await _select_legacy_collection("pm_users", current_part)
-    if found and current_count < await _collection_count(database.db[f"pm_users.{legacy_part}"]):
-        await _migrate_collection("pm_users", legacy_part, current_part)
-
 
 async def load_settings():
     if not Config.DATABASE_URL:
@@ -281,20 +202,6 @@ async def load_settings():
             LOGGER.info("Loaded.. Sabnzbd Data from MongoDB")
 
         user_part = PART
-        legacy_user_part, found_legacy_users = await _select_legacy_collection(
-            "users", PART, prefer_quota=True
-        )
-        current_user_count = await _collection_count(database.db[f"users.{PART}"])
-        legacy_user_count = await _collection_count(database.db[f"users.{legacy_user_part}"])
-        if found_legacy_users and legacy_user_count > current_user_count:
-            await _migrate_collection("users", legacy_user_part, PART)
-            user_part = PART
-            user_exists = True
-        elif found_legacy_users and not user_exists:
-            user_part = legacy_user_part
-            user_exists = True
-
-        await _migrate_legacy_pm_users(PART)
 
         if user_exists:
             rows = database.db.users[user_part].find({})

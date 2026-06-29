@@ -7,13 +7,9 @@ from time import time
 from aioshutil import rmtree
 from natsort import natsorted
 from PIL import Image
-from pyrogram import StopTransmission
+from pyrogram import StopTransmission, raw
 from pyrogram.errors import BadRequest, FloodPremiumWait, FloodWait, RPCError
-from pyrogram.raw.types import (
-    DocumentAttributeAudio,
-    DocumentAttributeFilename,
-    DocumentAttributeVideo,
-)
+
 from aiofiles.os import (
     path as aiopath,
     remove,
@@ -27,7 +23,6 @@ from pyrogram.types import (
 
 from ....core.config_manager import Config
 from ....core.tg_client import TgClient
-from ...ext_utils.hyperup_utils import HypertgUpload
 from ...ext_utils.bot_utils import sync_to_async
 from ...ext_utils.files_utils import get_base_name, is_archive
 from ...ext_utils.status_utils import get_readable_file_size, get_readable_time
@@ -41,6 +36,7 @@ from ...ext_utils.media_utils import (
     get_md5_hash,
 )
 from ...telegram_helper.message_utils import delete_message
+from ...ext_utils.hyperup_utils import HypertgUpload
 
 LOGGER = getLogger(__name__)
 
@@ -71,8 +67,8 @@ class TelegramUploader:
         self._sent_msg = None
         self._log_msg = None
         self._user_session = self._listener.transmission_mode in ("user", "both")
+        self._hu: HypertgUpload | None = None
         self._error = ""
-        self._hu = None
 
     async def _user_settings(self):
         settings_map = {
@@ -414,14 +410,21 @@ class TelegramUploader:
                                 chat_id=self._sent_msg.chat.id,
                                 message_ids=self._sent_msg.id,
                             )
-                    self._last_msg_in_group = False
-                    if self._hu is not None:
-                        task = ensure_future(
-                            self._upload_file_task(file_, f_path, dirpath)
+                    elif (
+                        not self._user_session
+                        and f_size > 2097152000
+                        and TgClient.user is not None
+                    ):
+                        user_msg = await TgClient.user.get_messages(
+                            chat_id=self._sent_msg.chat.id,
+                            message_ids=self._sent_msg.id,
                         )
-                        upload_tasks.append(task)
-                    else:
-                        await self._upload_file_task(file_, f_path, dirpath)
+                        if user_msg is not None:
+                            self._user_session = True
+                            self._sent_msg = user_msg
+                    self._last_msg_in_group = False
+                    task = ensure_future(self._upload_file_task(file_, f_path, dirpath))
+                    upload_tasks.append(task)
                     if self._listener.is_cancelled:
                         return
                 except Exception as err:
@@ -508,7 +511,7 @@ class TelegramUploader:
                 attributes = []
                 if key == "videos":
                     attributes.append(
-                        DocumentAttributeVideo(
+                        raw.types.DocumentAttributeVideo(
                             duration=duration,
                             w=width,
                             h=height,
@@ -517,14 +520,16 @@ class TelegramUploader:
                     )
                 elif key == "audios":
                     attributes.append(
-                        DocumentAttributeAudio(
+                        raw.types.DocumentAttributeAudio(
                             duration=duration,
                             performer=artist,
                             title=title,
                         )
                     )
                 if key in ("videos", "audios", "documents"):
-                    attributes.append(DocumentAttributeFilename(file_name=file))
+                    attributes.append(
+                        raw.types.DocumentAttributeFilename(file_name=file)
+                    )
 
                 sent = await self._hu.upload(
                     target_client=self._sent_msg._client,

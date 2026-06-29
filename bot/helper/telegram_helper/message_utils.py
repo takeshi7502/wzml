@@ -493,9 +493,29 @@ async def update_status_message(sid, force=False):
                 del intervals["status"][sid]
             return
         if text != status_dict[sid]["message"].text:
-            message = await edit_message(
-                status_dict[sid]["message"], text, buttons, block=False, photo="IMAGES"
-            )
+            old_message = status_dict[sid]["message"]
+            if old_message.media and len(text) > 1024:
+                message = await TgClient.bot.send_message(
+                    chat_id=old_message.chat.id,
+                    text=text,
+                    disable_web_page_preview=True,
+                    disable_notification=True,
+                    reply_markup=buttons,
+                )
+                if isinstance(message, str):
+                    LOGGER.error(
+                        f"Status with id: {sid} haven't been updated. Error: {message}"
+                    )
+                    return
+                await delete_message(old_message)
+            else:
+                message = await edit_message(
+                    old_message,
+                    text,
+                    buttons,
+                    block=False,
+                    photo="IMAGES" if len(text) <= 1024 else None,
+                )
             if isinstance(message, str):
                 if message.startswith("Telegram says: [40"):
                     del status_dict[sid]
@@ -532,7 +552,11 @@ async def send_status_message(msg, user_id=0):
                 return
             old_message = status_dict[sid]["message"]
             message = await send_message(
-                msg, text, buttons, block=False, photo="IMAGES"
+                msg,
+                text,
+                buttons,
+                block=False,
+                photo="IMAGES" if len(text) <= 1024 else None,
             )
             if isinstance(message, str):
                 LOGGER.error(
@@ -547,7 +571,11 @@ async def send_status_message(msg, user_id=0):
             if text is None:
                 return
             message = await send_message(
-                msg, text, buttons, block=False, photo="IMAGES"
+                msg,
+                text,
+                buttons,
+                block=False,
+                photo="IMAGES" if len(text) <= 1024 else None,
             )
             if isinstance(message, str):
                 LOGGER.error(

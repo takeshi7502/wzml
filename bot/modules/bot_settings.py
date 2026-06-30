@@ -1710,11 +1710,23 @@ async def edit_bot_settings(client, query):
         rfunc = partial(update_buttons, message, "quota")
         await event_handler(client, query, pfunc, rfunc)
     elif data[1] == "referraltoggle":
+        if not Config.REFERRAL_ENABLED and (
+            not Config.REFERRAL_REQUIRED_CHAT_ID or not Config.REFERRAL_REQUIRED_CHAT_LINK
+        ):
+            return await query.answer(
+                "Set Group Chat ID and Group Chat Link before enabling Invite.",
+                show_alert=True,
+            )
         await query.answer()
         Config.REFERRAL_ENABLED = not Config.REFERRAL_ENABLED
         await database.update_config({"REFERRAL_ENABLED": Config.REFERRAL_ENABLED})
         await update_buttons(message, "referral")
     elif data[1] == "subscribetoggle":
+        if not Config.REFERRAL_SUBSCRIBE_ENABLED and not Config.REFERRAL_SUBSCRIBE_CHANNEL_LINK:
+            return await query.answer(
+                "Set Channel Link before enabling Subscribe.",
+                show_alert=True,
+            )
         await query.answer()
         Config.REFERRAL_SUBSCRIBE_ENABLED = not Config.REFERRAL_SUBSCRIBE_ENABLED
         await database.update_config({"REFERRAL_SUBSCRIBE_ENABLED": Config.REFERRAL_SUBSCRIBE_ENABLED})

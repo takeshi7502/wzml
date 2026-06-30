@@ -243,7 +243,7 @@ async def user_interval_check(user_id):
     return None
 
 
-async def pre_task_check(message):
+async def pre_task_check(message, quota_cost=1):
     LOGGER.info("Running Pre Task Checks ...")
     msg = []
     button = None
@@ -286,7 +286,7 @@ async def pre_task_check(message):
 
     from .user_quota_manager import quota_precheck
 
-    quota_msg = await quota_precheck(message)
+    quota_msg = await quota_precheck(message, quota_cost=quota_cost)
     if quota_msg:
         msg.append(quota_msg)
 

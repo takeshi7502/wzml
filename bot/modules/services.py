@@ -21,6 +21,7 @@ from ..helper.ext_utils.referral_manager import (
     referral_invite_link,
     referral_share_link,
     set_pending_referral,
+    subscribe_reward_claimed,
 )
 from ..helper.ext_utils.user_quota_manager import quota_get_usage
 from ..helper.languages import Language
@@ -36,16 +37,25 @@ from ..helper.telegram_helper.message_utils import (
 )
 
 
+def _start_reward_line(lang, user_id):
+    if subscribe_reward_claimed(user_id):
+        us_cmd = f"/{BotCommands.UserSetCommand[1] if isinstance(BotCommands.UserSetCommand, list) else BotCommands.UserSetCommand}"
+        return lang.START_REWARD_CLAIMED_LINE.format(us_cmd=us_cmd)
+    return lang.START_REWARD_LINE.format(quota=Config.REFERRAL_SUBSCRIBE_REWARD_QUOTA)
+
+
+def _start_buttons(lang, user_id, state="join"):
+    buttons = ButtonMaker()
+    buttons.url_button(lang.START_BUTTON1, "https://t.me/jinmups")
+    buttons.url_button(lang.START_BUTTON2, "https://t.me/jinmups_vn")
+    return buttons.build_menu(2)
+
+
 @new_task
 async def start(_, message):
     userid = message.from_user.id
     lang = Language()
-    buttons = ButtonMaker()
-    buttons.url_button(
-        lang.START_BUTTON1, "https://www.github.com/SilentDemonSD/WZML-X"
-    )
-    buttons.url_button(lang.START_BUTTON2, "https://t.me/WZML_X")
-    reply_markup = buttons.build_menu(2)
+    reply_markup = _start_buttons(lang, userid)
 
     if len(message.command) > 1 and message.command[1] == "wzmlx":
         await delete_message(message)
@@ -113,15 +123,15 @@ async def start(_, message):
     if await CustomFilters.authorized(_, message):
         start_string = lang.START_MSG.format(
             cmd=BotCommands.HelpCommand[0],
+            reward_line=_start_reward_line(lang, userid),
         )
         await send_message(message, start_string, reply_markup, photo="IMAGES")
     elif Config.BOT_PM:
-        await send_message(
-            message,
-            "<i>Now, Bot will send you all your files and links here. Start Using Now...</i>",
-            reply_markup,
-            photo="IMAGES",
+        start_string = lang.START_MSG.format(
+            cmd=BotCommands.HelpCommand[0],
+            reward_line=_start_reward_line(lang, userid),
         )
+        await send_message(message, start_string, reply_markup, photo="IMAGES")
     else:
         await send_message(
             message,
@@ -151,6 +161,8 @@ async def start_cb(_, query):
             "⌬ <b>Verified :</b>\n┃\n┠ <b>Mirror Chat</b> → Joined\n┖ <b>Thanks for joining!</b>",
             buttons.build_menu(1),
         )
+    if input_token in {"subscribe_join", "subscribe_claim", "subscribe_claimed"}:
+        return await query.answer("Please join the channel, then use the bot command again.", show_alert=True)
     data = user_data.get(user_id, {})
 
     if input_token == "activated":
@@ -217,20 +229,13 @@ async def quota(_, message):
     user = message.from_user or message.sender_chat
     user_id = user.id
     text = await quota_get_usage(user_id, user=user, show_upgrade=False)
-    invite_link = referral_invite_link(user_id)
-    share_link = referral_share_link(user_id)
-    if invite_link or share_link:
+    invite_link = referral_invite_link(user_id) if Config.REFERRAL_ENABLED else ""
+    if Config.REFERRAL_ENABLED:
         text += (
             "\n\n⌬ <b>Referral :</b>\n│"
-            f"\n┟ <b>Invite Link</b> → {invite_link or 'N/A'}"
-            f"\n┖ <b>Share Link</b> → {share_link or 'N/A'}"
+            f"\n┖ <b>Invite Link</b> → <code>{invite_link or 'N/A'}</code>"
         )
-    buttons = ButtonMaker()
-    if invite_link:
-        buttons.url_button("Invite Link", invite_link)
-    if share_link:
-        buttons.url_button("Share Invite", share_link)
-    await send_message(message, text, buttons.build_menu(2) if invite_link or share_link else None)
+    await send_message(message, text)
 
 
 @new_task

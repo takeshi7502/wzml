@@ -129,8 +129,18 @@ def _reset_if_needed(quota):
         quota["last_reset_key"] = current_key
 
 
+def _pending_cost_total(quota):
+    total = 0
+    for pending in quota.get("pending", {}).values():
+        try:
+            total += max(1, int(pending.get("cost", 1)))
+        except Exception:
+            total += 1
+    return total
+
+
 def _remaining(quota, user_id=None):
-    return _limit(user_id) + int(quota.get("extra_quota", 0)) - int(quota.get("used_today", 0)) - len(quota.get("pending", {}))
+    return _limit(user_id) + int(quota.get("extra_quota", 0)) - int(quota.get("used_today", 0)) - _pending_cost_total(quota)
 
 
 def _used_free(quota, user_id=None):
@@ -175,17 +185,20 @@ def _usage_text(user_id, quota, exceeded=False, user=None, show_upgrade=True):
         us_cmd = f"/us{Config.CMD_SUFFIX}"
         admin_link = f"tg://user?id={Config.OWNER_ID}"
         referral_tip = (
-            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b><u>Invite Friends</u></b> to more mirror uses free.\n"
+            f"┠ <b>Tip:</b> Use <code>{us_cmd}</code> → <b><u>Invite Friends</u></b> to more quota free.\n"
             if Config.REFERRAL_ENABLED
             else ""
         )
         return (
-            "┠ <b><i>You've used up all your free mirror uses for today! ⚠️</i></b>\n"
+            "┠ <b><i>You have used up your free quota for today! ⚠️</i></b>\n"
             f"{referral_tip}"
             f"┖ <b>Buy VIP for higher daily quota. DM now → </b><a href=\"{admin_link}\"><b><u>ADMIN</u></b></a><b>.</b>"
         )
+    is_bypass = _is_bypass(user_id)
     vip = summary["vip"]
-    if vip["active"]:
+    if is_bypass:
+        vip_text = "┖ <b>VIP Status</b> → Admin"
+    elif vip["active"]:
         vip_text = f"┠ <b>VIP Status</b> → Active\n┖ <b>VIP Expires</b> → {vip['expires']}"
     elif vip.get("enabled"):
         vip_text = "┖ <b>VIP Status</b> → Inactive"
@@ -193,14 +206,18 @@ def _usage_text(user_id, quota, exceeded=False, user=None, show_upgrade=True):
         vip_text = f"┠ <b>VIP Status</b> → Inactive\n┖ {_upgrade_text()}"
     else:
         vip_text = "┖ <b>VIP Status</b> → Inactive"
+    quota_free = "Unlimited" if is_bypass else f"{summary['daily_limit'] - summary['daily_used']} / {summary['daily_limit']}"
+    pending = "0" if is_bypass else summary["pending"]
+    extra_quota = "∞" if is_bypass else summary["extra_quota"]
+    reset_after = "N/A" if is_bypass else summary["reset_after"]
     return (
         "⌬ <b>User Quota :</b>\n"
         "│\n"
         f"┟ <b>Name</b> → {_user_label(user_id, user)}\n"
-        f"┠ <b>Quota Free</b> → {summary['daily_limit'] - summary['daily_used']} / {summary['daily_limit']}\n"
-        f"┠ <b>Pending Tasks</b> → {summary['pending']}\n"
-        f"┠ <b>Extra Quota</b> → {summary['extra_quota']}\n"
-        f"┠ <b>Reset After</b> → {summary['reset_after']}\n"
+        f"┠ <b>Quota Free</b> → {quota_free}\n"
+        f"┠ <b>Pending Tasks</b> → {pending}\n"
+        f"┠ <b>Extra Quota</b> → {extra_quota}\n"
+        f"┠ <b>Reset After</b> → {reset_after}\n"
         f"{vip_text}"
     )
 
@@ -212,7 +229,7 @@ async def save_user_quota(user_id):
         LOGGER.warning("User quota DB save failed for %s: %s", user_id, e)
 
 
-async def quota_precheck(message, task_type="task", task_name=None):
+async def quota_precheck(message, task_type="task", task_name=None, quota_cost=1):
     if not Config.USER_QUOTA_ENABLED:
         return None
     user = message.from_user or message.sender_chat
@@ -222,16 +239,27 @@ async def quota_precheck(message, task_type="task", task_name=None):
     async with _locks[user_id]:
         quota = _quota_doc(user_id)
         _reset_if_needed(quota)
+        try:
+            quota_cost = max(1, int(quota_cost))
+        except Exception:
+            quota_cost = 1
         key = _task_key(message)
-        if key not in quota["pending"] and _remaining(quota, user_id) <= 0:
+        if key not in quota["pending"] and _remaining(quota, user_id) < quota_cost:
             return _usage_text(user_id, quota, exceeded=True, user=user)
         quota["pending"][key] = {
             "task_type": task_type,
             "name": task_name or "",
+            "cost": quota_cost,
             "created_at": int(_now().timestamp()),
         }
         await save_user_quota(user_id)
-        LOGGER.info("User quota hold: user=%s task=%s type=%s", user_id, key, task_type)
+        LOGGER.info(
+            "User quota hold: user=%s task=%s type=%s cost=%s",
+            user_id,
+            key,
+            task_type,
+            quota_cost,
+        )
     return None
 
 
@@ -246,14 +274,22 @@ async def quota_confirm_task(listener):
         key = _task_key(message)
         if key not in quota.get("pending", {}):
             return
-        quota["pending"].pop(key, None)
-        if int(quota.get("used_today", 0)) < _limit(user_id):
-            quota["used_today"] = int(quota.get("used_today", 0)) + 1
-        else:
-            quota["extra_quota"] = max(0, int(quota.get("extra_quota", 0)) - 1)
-        quota["total_used"] = int(quota.get("total_used", 0)) + 1
+        pending = quota["pending"].pop(key, {})
+        cost = 2 if getattr(listener, "is_torrent", False) or getattr(listener, "is_qbit", False) else int(pending.get("cost", 1) or 1)
+        for _ in range(max(1, cost)):
+            if int(quota.get("used_today", 0)) < _limit(user_id):
+                quota["used_today"] = int(quota.get("used_today", 0)) + 1
+            else:
+                quota["extra_quota"] = max(0, int(quota.get("extra_quota", 0)) - 1)
+        quota["total_used"] = int(quota.get("total_used", 0)) + max(1, cost)
         await save_user_quota(user_id)
-        LOGGER.info("User quota confirm: user=%s task=%s used_today=%s", user_id, key, quota["used_today"])
+        LOGGER.info(
+            "User quota confirm: user=%s task=%s cost=%s used_today=%s",
+            user_id,
+            key,
+            cost,
+            quota["used_today"],
+        )
 
 
 async def quota_release_task(listener, reason=""):
@@ -300,6 +336,23 @@ async def quota_clear_pending(user_id):
         quota["pending"] = {}
         await save_user_quota(user_id)
         return _usage_text(user_id, quota)
+
+
+async def quota_clear_all_pending():
+    cleared = 0
+    for user_id, data in list(user_data.items()):
+        quota = data.get(QUOTA_KEY)
+        if not isinstance(quota, dict) or not quota.get("pending"):
+            continue
+        async with _locks[user_id]:
+            quota = _quota_doc(user_id)
+            if quota.get("pending"):
+                quota["pending"] = {}
+                await save_user_quota(user_id)
+                cleared += 1
+    if cleared:
+        LOGGER.info("Cleared stale quota pending tasks for %s user(s) on startup", cleared)
+    return cleared
 
 
 async def quota_set_vip_limit(user_id, limit):

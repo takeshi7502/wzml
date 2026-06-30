@@ -27,14 +27,21 @@ from ..helper.ext_utils.db_handler import database
 from ..helper.ext_utils.mega_utils import get_mega_account_info
 from ..helper.ext_utils.media_utils import create_thumb
 from ..helper.ext_utils.status_utils import get_readable_file_size
-from ..helper.ext_utils.user_quota_manager import quota_get_usage
-from ..helper.ext_utils.referral_manager import referral_invite_link, referral_share_link
+from ..helper.ext_utils.user_quota_manager import quota_get_usage, quota_summary
+from ..helper.telegram_helper.filters import CustomFilters
+from ..helper.ext_utils.referral_manager import (
+    referral_invite_link,
+    referral_share_link,
+    referral_stats,
+    referral_pending_stats,
+)
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.message_utils import (
     delete_message,
     edit_message,
     send_file,
     send_message,
+    auto_delete_message,
 )
 
 handler_dict = {}
@@ -389,19 +396,41 @@ async def get_user_settings(from_user, stype="main"):
         btns = buttons.build_menu(2)
 
     elif stype == "quota":
+        if Config.REFERRAL_ENABLED:
+            buttons.data_button("Invite", f"userset {user_id} referral")
         buttons.data_button("Back", f"userset {user_id} back", "footer")
         buttons.data_button(
             "Close", f"userset {user_id} close", "footer", style=ButtonStyle.DANGER
         )
+        quota_text = await quota_get_usage(user_id, user=from_user, show_upgrade=False)
+        summary = quota_summary(user_id)
+        vip = summary.get("vip", {})
+        if vip.get("active") and user_id != Config.OWNER_ID and user_id not in sudo_users:
+            dm_hint = "You can use all commands in bot DM with VIP!"
+        else:
+            dm_hint = "You can use this command in DM!"
+        text = f"{quota_text}\n=> <b><i>{dm_hint}</i></b>"
+        btns = buttons.build_menu(2)
+
+    elif stype == "referral":
         invite_link = referral_invite_link(user_id)
         share_link = referral_share_link(user_id)
-        if invite_link:
-            buttons.url_button("Invite Link", invite_link)
-        if share_link:
-            buttons.url_button("Share Invite", share_link)
-        quota_text = await quota_get_usage(user_id, user=from_user, show_upgrade=False)
-        text = f"{quota_text}\n\n⌬ <b>Referral :</b>\n│\n┟ <b>Invite Link</b> → {invite_link or 'N/A'}\n┖ <b>Share Link</b> → {share_link or 'N/A'}"
-        btns = buttons.build_menu(2)
+        success = referral_stats(user_id)
+        pending_join = referral_pending_stats(user_id)
+        buttons.url_button("Share Link", share_link or invite_link or "https://t.me")
+        buttons.data_button("Quota", f"userset {user_id} quota")
+        buttons.data_button("Back", f"userset {user_id} back", "footer")
+        buttons.data_button(
+            "Close", f"userset {user_id} close", "footer", style=ButtonStyle.DANGER
+        )
+        btns = buttons.build_menu(1)
+        text = f"""⌬ <b>Invite Friends :</b>
+┃
+┟ <b>Invite Link</b> → <code>{invite_link or 'Unavailable'}</code>
+┠ <b>Reward</b> → +{Config.REFERRAL_REWARD_QUOTA} Extra Quota / verified user
+┠ <b>Requirement</b> → Friend must join Mirror Chat
+┠ <b>Your Referrals</b> → {success} successful
+┖ <b>Referrals Pending Join</b> → {pending_join}"""
 
     elif stype == "general":
         if user_dict.get("DEFAULT_UPLOAD", ""):
@@ -1106,11 +1135,40 @@ async def update_user_settings(query, stype="main"):
 
 
 @new_task
-async def send_user_settings(_, message):
+async def send_user_settings(client, message):
     from_user = message.from_user
+    if message.chat.type.name != "PRIVATE" and not await CustomFilters.authorized_uset(client, message):
+        return
     handler_dict[from_user.id] = False
+    replied = message.reply_to_message
+    if (
+        replied
+        and (from_user.id == Config.OWNER_ID or from_user.id in sudo_users)
+        and (target_user := replied.from_user or replied.sender_chat)
+    ):
+        user_id = target_user.id
+        user = None
+        try:
+            user = await client.get_users(user_id)
+        except Exception:
+            user = target_user
+        text = await quota_get_usage(user_id, user=user, show_upgrade=False)
+        buttons = ButtonMaker()
+        vip = quota_summary(user_id).get("vip", {})
+        vip_toggle = "Disable VIP" if vip.get("active") else "Enable VIP"
+        buttons.data_button("Reset Quota", f"botset quotauser reset {user_id} {from_user.id}")
+        buttons.data_button("Set VIP Daily", f"botset quotauser viplimit {user_id} {from_user.id}")
+        buttons.data_button("Add Extra Quota", f"botset quotauser add {user_id} {from_user.id}")
+        buttons.data_button("Set VIP Days", f"botset quotauser vipdays {user_id} {from_user.id}")
+        buttons.data_button("Remove Extra Quota", f"botset quotauser remove {user_id} {from_user.id}")
+        buttons.data_button(vip_toggle, f"botset quotauser viptoggle {user_id} {from_user.id}")
+        buttons.data_button("Close", "botset close", "footer")
+        await send_message(message, text, buttons.build_menu(2))
+        return
     msg, button = await get_user_settings(from_user)
-    await send_message(message, msg, button)
+    user_menu = await send_message(message, msg, button)
+    if message.chat.type.name != "PRIVATE" and not isinstance(user_menu, str):
+        await auto_delete_message(user_menu, message, stime=100)
 
 
 @new_task
@@ -1498,6 +1556,7 @@ async def edit_user_settings(client, query):
         "ffset",
         "advanced",
         "quota",
+        "referral",
         "gdrive",
         "rclone",
     ]:

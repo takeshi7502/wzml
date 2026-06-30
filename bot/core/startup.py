@@ -28,6 +28,7 @@ from .. import (
 )
 from ..helper.ext_utils.bot_utils import derive_service_password
 from ..helper.ext_utils.db_handler import database
+from ..helper.ext_utils.user_quota_manager import quota_clear_all_pending
 from .config_manager import Config, BinConfig
 from .tg_client import TgClient, db_partition_id
 from .torrent_manager import TorrentManager
@@ -236,6 +237,7 @@ async def load_settings():
                         row[key] = path
                 user_data[uid] = row
             LOGGER.info("Users Data has been imported from MongoDB")
+            await quota_clear_all_pending()
 
         if rss_exists:
             rows = database.db.rss[PART].find({})

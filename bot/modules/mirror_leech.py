@@ -45,7 +45,6 @@ from ..helper.mirror_leech_utils.download_utils.telegram_download import (
     TelegramDownloadHelper,
 )
 from ..helper.telegram_helper.message_utils import (
-    auto_delete_message,
     delete_links,
     get_tg_link_message,
     send_message,
@@ -90,14 +89,6 @@ class Mirror(TaskListener):
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
 
-        check_msg, check_button = await pre_task_check(self.message)
-        if check_msg:
-            await delete_links(self.message)
-            await auto_delete_message(
-                await send_message(self.message, check_msg, check_button)
-            )
-            return
-
         args = {
             "-doc": False,
             "-med": False,
@@ -136,7 +127,14 @@ class Mirror(TaskListener):
             "-ff": set(),
         }
 
+        check_msg, check_button = await pre_task_check(self.message)
+        if check_msg:
+            await delete_links(self.message)
+            await send_message(self.message, check_msg, check_button)
+            return
+
         arg_parser(input_list[1:], args)
+
 
         if Config.DISABLE_BULK and args.get("-b", False):
             await send_message(self.message, "Bulk downloads are currently disabled.")
@@ -422,6 +420,7 @@ class Mirror(TaskListener):
                     return
 
         await set_message_reaction(self.message, "✅")
+        await delete_links(self.message)
 
         if file_ is not None:
             await TelegramDownloadHelper(self).add_download(

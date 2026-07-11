@@ -23,33 +23,40 @@ async def _read_tunnel_url():
         return None
 
 
+async def _apply_tunnel_url(url):
+    if not url or Config.BASE_URL == url:
+        return False
+    Config.BASE_URL = url
+    try:
+        from .db_handler import database
+
+        await database.update_config({"BASE_URL": url})
+    except Exception as e:
+        LOGGER.warning(f"tunnel_monitor: database update failed: {e}")
+    LOGGER.info(f"tunnel_monitor: BASE_URL = {url}")
+    return True
+
+
 async def _tunnel_monitor_loop():
     LOGGER.info("tunnel_monitor: started")
     while True:
         try:
             url = await _read_tunnel_url()
-            if url and Config.BASE_URL != url:
-                Config.BASE_URL = url
-                LOGGER.info(f"tunnel_monitor: BASE_URL = {url}")
+            await _apply_tunnel_url(url)
         except Exception as e:
             LOGGER.error(f"tunnel_monitor: {e}")
         await sleep(5)
 
 
 async def apply_tunnel_url_once():
-    if Config.BASE_URL:
-        LOGGER.info("tunnel_monitor: BASE_URL already set, skipping")
-        return Config.BASE_URL
     url = await _read_tunnel_url()
     if url:
-        Config.BASE_URL = url
-        LOGGER.info(f"tunnel_monitor: initial BASE_URL = {url}")
+        changed = await _apply_tunnel_url(url)
+        if not changed:
+            LOGGER.info(f"tunnel_monitor: current BASE_URL = {url}")
     return url
 
 
 def start_tunnel_monitor():
-    if Config.BASE_URL:
-        LOGGER.info("tunnel_monitor: BASE_URL already set, background monitor disabled")
-        return
     bot_loop.create_task(_tunnel_monitor_loop())
     LOGGER.info("tunnel_monitor: background monitor started")

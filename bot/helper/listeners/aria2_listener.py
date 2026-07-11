@@ -81,7 +81,7 @@ async def _on_download_complete(api, data):
         LOGGER.info(f"Gid changed from {gid} to {new_gid}")
         if task := await get_task_by_gid(new_gid):
             task.listener.is_torrent = True
-            if Config.BASE_URL and task.listener.select:
+            if Config.get_selector_base_url() and task.listener.select:
                 if not task.queued:
                     await api.forcePause(new_gid)
                 SBUTTONS = bt_selection_buttons(new_gid)

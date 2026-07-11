@@ -162,22 +162,34 @@ def compare_versions(v1, v2):
     )
 
 
+def _legacy_pin(gid):
+    return "".join([nbr for nbr in gid if nbr.isdigit()][:4])
+
+
+def _selector_base_url():
+    mode = str(Config.BASE_URL_MODE or "tunnel").lower()
+    if mode == "legacy":
+        return Config.BASE_URL_LEGACY, "/legacy/files", True
+    return Config.BASE_URL, "/app/files", False
+
+
 def bt_selection_buttons(id_):
     gid = id_[:12] if len(id_) > 25 else id_
     bot_id = _resolve_bot_id()
-    pin = derive_pin(id_, bot_id)
+    base_url, selector_path, is_legacy = _selector_base_url()
+    pin = _legacy_pin(id_) if is_legacy else derive_pin(id_, bot_id)
     buttons = ButtonMaker()
     if Config.WEB_PINCODE:
         buttons.url_button(
             "Select Files",
-            f"{Config.BASE_URL}/app/files?gid={id_}",
+            f"{base_url}{selector_path}?gid={id_}",
             style=ButtonStyle.PRIMARY,
         )
         buttons.data_button("Pincode", f"sel pin {gid} {pin}")
     else:
         buttons.url_button(
             "Select Files",
-            f"{Config.BASE_URL}/app/files?gid={id_}&pin={pin}",
+            f"{base_url}{selector_path}?gid={id_}&pin={pin}",
             style=ButtonStyle.PRIMARY,
         )
     buttons.data_button(

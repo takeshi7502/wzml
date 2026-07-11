@@ -19,6 +19,8 @@ class Config:
     AS_DOCUMENT = False
     AUTHORIZED_CHATS = ""
     BASE_URL = ""
+    BASE_URL_MODE = "tunnel"
+    BASE_URL_LEGACY = ""
     BOT_TOKEN = ""
     HELPER_TOKENS = ""
     HELPER_STRINGS = ""
@@ -192,6 +194,12 @@ class Config:
         }
 
     @classmethod
+    def get_selector_base_url(cls):
+        if str(cls.BASE_URL_MODE or "tunnel").lower() == "legacy":
+            return cls.BASE_URL_LEGACY
+        return cls.BASE_URL
+
+    @classmethod
     def load(cls):
         cls.load_config()
         cls.load_env()
@@ -213,6 +221,7 @@ class Config:
                     value = "rc"
                 elif attr in [
                     "BASE_URL",
+                    "BASE_URL_LEGACY",
                     "RCLONE_SERVE_URL",
                     "INDEX_URL",
                     "SEARCH_API_LINK",
@@ -300,6 +309,7 @@ class Config:
                     value = "rc"
                 elif key in [
                     "BASE_URL",
+                    "BASE_URL_LEGACY",
                     "RCLONE_SERVE_URL",
                     "INDEX_URL",
                     "SEARCH_API_LINK",

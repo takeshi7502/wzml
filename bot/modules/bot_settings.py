@@ -140,7 +140,9 @@ BOOL_VARS = [
 DEFAULT_DESP = {
     "AS_DOCUMENT": "Send files as document instead of media. Default: False.",
     "AUTHORIZED_CHATS": "User/Chat IDs authorized to use the bot. Space-separated. Supports thread IDs with | separator.",
-    "BASE_URL": "Public URL for torrent web file selection. Format: http://ip or http://ip:port.",
+    "BASE_URL": "Active URL for torrent selection. Tunnel mode uses the generated tunnel URL; Legacy mode uses http://ip:port.",
+    "BASE_URL_MODE": "Torrent selector mode: tunnel (new UI) or legacy (old UI).",
+    "BASE_URL_LEGACY": "Legacy public URL for torrent selection. Format: http://ip or http://ip:port.",
     "BOT_TOKEN": "Telegram Bot Token from @BotFather.",
     "HELPER_TOKENS": "Additional bot tokens for parallel task handling.",
     "BOT_MAX_TASKS": "Max tasks (including queued) the bot runs in parallel. 0 = unlimited.",
@@ -379,21 +381,33 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
 ┠ <b>Current</b> → <code>{current}</code>
 ┖ <b>Time Left</b> → <code>60 sec</code>"""
         elif edit_type == "editvar":
+            display_key = key
+            if key == "BASE_URL" and Config.BASE_URL_MODE == "legacy":
+                display_key = "BASE_URL_LEGACY"
             msg = f"<b>Variable:</b> <code>{key}</code>\n\n"
             msg += f"<b>Description:</b> {DEFAULT_DESP.get(key, 'No Description Provided')}\n\n"
-            value = Config.get(key)
+            value = Config.get(display_key)
             if value == "":
                 value = "None"
+            if key == "BASE_URL":
+                msg += f"<b>Mode:</b> <code>{Config.BASE_URL_MODE.title()}</code>\n\n"
             msg += f"<b>Current Value:</b> <code>{value}</code>\n\n"
             buttons.data_button(
-                "View Value", f"botset showvar {key}", position="header"
+                "View Value", f"botset showvar {display_key}", position="header"
             )
+            if key == "BASE_URL":
+                next_mode = "legacy" if Config.BASE_URL_MODE == "tunnel" else "tunnel"
+                buttons.data_button(
+                    f"Mode: {Config.BASE_URL_MODE.title()}",
+                    f"botset baseurlmode {next_mode}",
+                    style=ButtonStyle.PRIMARY,
+                )
             buttons.data_button("Back", "botset back var", position="footer")
             if key not in BOOL_VARS:
                 if not edit_mode:
                     buttons.data_button(
                         "Edit Value",
-                        f"botset editvar {key} edit",
+                        f"botset editvar {display_key} edit",
                         style=ButtonStyle.PRIMARY,
                     )
                 else:
@@ -403,15 +417,15 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
                 buttons.data_button("True", f"botset boolvar {key} on")
                 buttons.data_button("False", f"botset boolvar {key} off")
             if key not in BOOL_VARS and key not in PROTECTED_VARS:
-                buttons.data_button("Reset", f"botset resetvar {key}")
+                buttons.data_button("Reset", f"botset resetvar {display_key}")
             buttons.data_button(
                 "Close", "botset close", position="footer", style=ButtonStyle.DANGER
             )
-            if edit_mode and key in RESTART_VARS:
+            if edit_mode and display_key in RESTART_VARS:
                 msg += (
                     "\n<b>Note:</b> Restart required for this edit to take effect!\n\n"
                 )
-            if edit_mode and key not in BOOL_VARS:
+            if edit_mode and display_key not in BOOL_VARS:
                 msg += "<i>Send a valid value for the above Var.</i>\n┖ <b>Time Left :</b> <code>60 sec</code>"
     elif key == "var":
         conf_dict = {
@@ -431,6 +445,8 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
                 "REFERRAL_SUBSCRIBE_ENABLED",
                 "REFERRAL_SUBSCRIBE_REWARD_QUOTA",
                 "REFERRAL_SUBSCRIBE_CHANNEL_LINK",
+                "BASE_URL_MODE",
+                "BASE_URL_LEGACY",
             }
         }
         all_keys = list(conf_dict.keys())
@@ -743,7 +759,8 @@ async def edit_variable(_, message, pre_message, key):
     Config.set(key, value)
     if key == "CMD_SUFFIX":
         BotCommands.refresh_commands()
-    await update_buttons(pre_message, key, "editvar", False)
+    display_key = "BASE_URL" if key == "BASE_URL_LEGACY" else key
+    await update_buttons(pre_message, display_key, "editvar", False)
     await delete_message(message)
     await database.update_config({key: value})
     if key in ["SEARCH_PLUGINS", "SEARCH_API_LINK"]:
@@ -1415,6 +1432,14 @@ async def edit_bot_settings(client, query):
             globals()["start"] = 0
         await query.answer()
         await update_buttons(message, data[1])
+    elif data[1] == "baseurlmode":
+        mode = data[2].lower()
+        if mode not in ("tunnel", "legacy"):
+            return await query.answer("Invalid BASE_URL mode!", show_alert=True)
+        Config.set("BASE_URL_MODE", mode)
+        await database.update_config({"BASE_URL_MODE": mode})
+        await query.answer(f"Selector mode changed to {mode.title()}")
+        await update_buttons(message, "BASE_URL", "editvar", False)
     elif data[1] == "resetvar":
         await query.answer()
         value = ""
@@ -1446,7 +1471,7 @@ async def edit_bot_settings(client, query):
         elif data[2] == "TORRENT_TIMEOUT":
             await TorrentManager.change_aria2_option("bt-stop-timeout", "0")
             await database.update_aria2("bt-stop-timeout", "0")
-        elif data[2] in ("BASE_URL", "WEB_ACCESS_PASSWORD"):
+        elif data[2] in ("BASE_URL", "BASE_URL_LEGACY", "WEB_ACCESS_PASSWORD"):
             await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
         elif data[2] == "GDRIVE_ID":
             if drives_names and drives_names[0] == "Main":
@@ -1471,7 +1496,8 @@ async def edit_bot_settings(client, query):
         elif data[2] == "SUDO_USERS":
             sudo_users.clear()
         Config.set(data[2], value)
-        await update_buttons(message, data[2], "editvar", False)
+        display_key = "BASE_URL" if data[2] == "BASE_URL_LEGACY" else data[2]
+        await update_buttons(message, display_key, "editvar", False)
         if data[2] == "DATABASE_URL":
             await database.disconnect()
         await database.update_config({data[2]: value})

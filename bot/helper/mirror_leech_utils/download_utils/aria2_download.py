@@ -111,7 +111,7 @@ async def add_aria2_download(listener, dpath, header, ratio, seed_time):
 
     if (
         not add_to_queue
-        and (not listener.select or not Config.BASE_URL)
+        and (not listener.select or not Config.get_selector_base_url())
         and listener.multi <= 1
         and not listener.is_rss
     ):

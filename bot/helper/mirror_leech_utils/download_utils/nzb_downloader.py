@@ -147,7 +147,7 @@ async def add_nzb(listener, path):
 
         await listener.on_download_start()
 
-        if Config.BASE_URL and listener.select:
+        if Config.get_selector_base_url() and listener.select:
             if url and name.startswith("Trying"):
                 metamsg = "Fetching URL, wait then you can select files. Use nzb file to avoid this wait."
                 meta = await send_message(listener.message, metamsg)

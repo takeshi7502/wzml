@@ -25,8 +25,8 @@ from ..helper.telegram_helper.message_utils import (
 
 @new_task
 async def select(_, message):
-    if not Config.BASE_URL:
-        await send_message(message, "Base URL not defined!")
+    if not Config.get_selector_base_url():
+        await send_message(message, "Base URL not defined for the active selector mode!")
         return
     user_id = message.from_user.id
     text = message.text

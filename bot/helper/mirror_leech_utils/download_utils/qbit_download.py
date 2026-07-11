@@ -98,7 +98,7 @@ async def add_qb_torrent(listener, path, ratio, seed_time):
 
         await listener.on_download_start()
 
-        if Config.BASE_URL and listener.select:
+        if Config.get_selector_base_url() and listener.select:
             if listener.link.startswith("magnet:"):
                 metamsg = "<b>Fetching Metadata...</b>\n\n<i>Hold tight! You can select files once it's done.</i>\n\n<b>💡 Tip:</b> Use <code>.torrent</code> file instead to skip this wait."
                 meta = await send_message(listener.message, metamsg)

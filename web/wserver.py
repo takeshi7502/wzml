@@ -365,6 +365,114 @@ async def handle_torrent(request: Request):
     return JSONResponse(content)
 
 
+@app.get("/legacy/files", response_class=HTMLResponse)
+async def legacy_files(request: Request):
+    return templates.TemplateResponse(request, "legacy_page.html")
+
+
+@app.api_route(
+    "/legacy/files/torrent", methods=["GET", "POST"], response_class=HTMLResponse
+)
+async def handle_legacy_torrent(request: Request):
+    params = request.query_params
+
+    if not (gid := params.get("gid")):
+        return JSONResponse(
+            {
+                "files": [],
+                "engine": "",
+                "error": "GID is missing",
+                "message": "GID not specified",
+            }
+        )
+
+    if not (pin := params.get("pin")):
+        return JSONResponse(
+            {
+                "files": [],
+                "engine": "",
+                "error": "Pin is missing",
+                "message": "PIN not specified",
+            }
+        )
+
+    code = "".join([nbr for nbr in gid if nbr.isdigit()][:4])
+    if code != pin:
+        return JSONResponse(
+            {
+                "files": [],
+                "engine": "",
+                "error": "Invalid pin",
+                "message": "The PIN you entered is incorrect",
+            }
+        )
+
+    if request.method == "POST":
+        if not (mode := params.get("mode")):
+            return JSONResponse(
+                {
+                    "files": [],
+                    "engine": "",
+                    "error": "Mode is not specified",
+                    "message": "Mode is not specified",
+                }
+            )
+        data = await request.json()
+        if mode == "rename":
+            if len(gid) > 20:
+                await handle_rename(gid, data)
+                content = {
+                    "files": [],
+                    "engine": "",
+                    "error": "",
+                    "message": "Rename successfully.",
+                }
+            else:
+                content = {
+                    "files": [],
+                    "engine": "",
+                    "error": "Rename failed.",
+                    "message": "Cannot rename aria2c torrent file",
+                }
+        else:
+            selected_files, unselected_files = extract_file_ids(data)
+            if gid.startswith("SABnzbd_nzo"):
+                await set_sabnzbd(gid, unselected_files)
+            elif len(gid) > 20:
+                await set_qbittorrent(gid, selected_files, unselected_files)
+            else:
+                selected_files = ",".join(selected_files)
+                await set_aria2(gid, selected_files)
+            content = {
+                "files": [],
+                "engine": "",
+                "error": "",
+                "message": "Your selection has been submitted successfully.",
+            }
+    else:
+        try:
+            if gid.startswith("SABnzbd_nzo"):
+                res = await sabnzbd_client.get_files(gid)
+                content = make_tree(res, "sabnzbd")
+            elif len(gid) > 20:
+                res = await qbittorrent.torrents.files(gid)
+                content = make_tree(res, "qbittorrent")
+            else:
+                res = await aria2.getFiles(gid)
+                op = await aria2.getOption(gid)
+                fpath = f"{op['dir']}/"
+                content = make_tree(res, "aria2", fpath)
+        except (ClientError, TimeoutError, Exception, AQError) as e:
+            LOGGER.error(str(e))
+            content = {
+                "files": [],
+                "engine": "",
+                "error": "Error getting files",
+                "message": str(e),
+            }
+    return JSONResponse(content)
+
+
 async def handle_rename(gid, data):
     try:
         _type = data["type"]

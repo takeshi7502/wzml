@@ -416,7 +416,9 @@ async def get_buttons(key=None, edit_type=None, edit_mode=False):
                 msg += "<i>Choose a valid value for the above Var</i>\n\n"
                 buttons.data_button("True", f"botset boolvar {key} on")
                 buttons.data_button("False", f"botset boolvar {key} off")
-            if key not in BOOL_VARS and key not in PROTECTED_VARS:
+            if key not in BOOL_VARS and (
+                key not in PROTECTED_VARS or key == "USER_SESSION_STRING"
+            ):
                 buttons.data_button("Reset", f"botset resetvar {display_key}")
             buttons.data_button(
                 "Close", "botset close", position="footer", style=ButtonStyle.DANGER

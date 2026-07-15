@@ -6,6 +6,7 @@ from pytz import timezone, utc
 from ... import LOGGER, auth_chats, bot_loop
 from ...core.config_manager import Config
 from ...core.tg_client import TgClient
+from .user_quota_manager import refresh_shared_quota_cache
 
 _quota_reset_notifier_task = None
 _last_notify_key = ""
@@ -53,8 +54,13 @@ async def _send_quota_reset_notice(now):
 
 async def _quota_reset_notifier_loop():
     global _last_notify_key
+    refresh_ticks = 0
     while True:
         try:
+            refresh_ticks += 1
+            if refresh_ticks >= 1:
+                refresh_ticks = 0
+                await refresh_shared_quota_cache()
             if Config.USER_QUOTA_ENABLED and Config.USER_QUOTA_RESET_NOTIFY:
                 now = datetime.now(_quota_timezone())
                 reset_hour = max(0, min(23, int(Config.USER_QUOTA_RESET_HOUR)))
@@ -64,7 +70,7 @@ async def _quota_reset_notifier_loop():
                     await _send_quota_reset_notice(now)
         except Exception as e:
             LOGGER.warning("Quota reset notifier tick failed: %s", e)
-        await sleep(60)
+        await sleep(5)
 
 
 def start_quota_reset_notifier():

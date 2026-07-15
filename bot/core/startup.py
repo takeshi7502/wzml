@@ -28,7 +28,11 @@ from .. import (
 )
 from ..helper.ext_utils.bot_utils import derive_service_password
 from ..helper.ext_utils.db_handler import database
-from ..helper.ext_utils.user_quota_manager import quota_clear_all_pending
+from ..helper.ext_utils.user_quota_manager import (
+    hydrate_shared_quota,
+    quota_clear_all_pending,
+    refresh_shared_quota,
+)
 from .config_manager import Config, BinConfig
 from .tg_client import TgClient, db_partition_id
 from .torrent_manager import TorrentManager
@@ -179,6 +183,20 @@ async def load_settings():
         if config_dict:
             Config.load_dict(config_dict)
 
+        quota_policy = {
+            "daily_limit": int(Config.USER_QUOTA_DAILY_LIMIT),
+            "reset_hour": int(Config.USER_QUOTA_RESET_HOUR),
+            "timezone": str(Config.TIMEZONE),
+        }
+        policy_ok, saved_policy = await database.ensure_shared_quota_policy(quota_policy)
+        if not policy_ok:
+            LOGGER.error(
+                "Shared quota policy mismatch. This bot=%s, database=%s. Quota enforcement disabled on this bot.",
+                quota_policy,
+                saved_policy,
+            )
+            Config.USER_QUOTA_ENABLED = False
+
         if pf_dict:
             for key, value in pf_dict.items():
                 if value:
@@ -237,7 +255,13 @@ async def load_settings():
                         row[key] = path
                 user_data[uid] = row
             LOGGER.info("Users Data has been imported from MongoDB")
-            await quota_clear_all_pending()
+            for uid in list(user_data):
+                await refresh_shared_quota(uid, migrate_local=True)
+
+        shared_loaded = await hydrate_shared_quota()
+        if shared_loaded:
+            LOGGER.info("Shared quota/VIP data loaded for %s user(s)", shared_loaded)
+        await quota_clear_all_pending()
 
         if rss_exists:
             rows = database.db.rss[PART].find({})

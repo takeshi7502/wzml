@@ -9,7 +9,7 @@ from ... import LOGGER, sudo_users, user_data
 from ...core.config_manager import Config
 from ...core.tg_client import TgClient
 from .db_handler import database
-from .user_quota_manager import quota_add_extra, quota_summary
+from .user_quota_manager import quota_add_extra_once, quota_summary
 
 REFERRAL_KEY = "REFERRAL"
 SUBSCRIBE_REWARD_KEY = "SUBSCRIBE_REWARD"
@@ -185,7 +185,7 @@ async def _user_link(client, user_id, cache=None):
 
 async def save_referral_user(user_id):
     try:
-        await database.update_user_data(user_id)
+        await database.save_shared_quota(user_id, user_data.get(user_id, {}))
     except Exception as e:
         LOGGER.warning("Referral DB save failed for %s: %s", user_id, e)
 
@@ -292,10 +292,14 @@ async def complete_referral(client, invitee_id):
     if not await is_user_in_required_chat(client, invitee_id):
         return False, "Please join Mirror Chat first."
     reward = int(ref.get("reward") or Config.REFERRAL_REWARD_QUOTA)
+    granted, _ = await quota_add_extra_once(
+        inviter_id, reward, f"referral:{invitee_id}"
+    )
+    if not granted:
+        return False, "Referral reward was already granted."
     ref["status"] = "completed"
     ref["completed_at"] = int(time())
     ref["reward"] = reward
-    await quota_add_extra(inviter_id, reward)
     await save_referral_user(invitee_id)
     return True, inviter_id
 
@@ -312,10 +316,15 @@ async def complete_subscribe_reward(client, user_id):
     reward = max(0, int(Config.REFERRAL_SUBSCRIBE_REWARD_QUOTA or 0))
     if reward <= 0:
         return False, "Subscribe reward quota is not configured."
+    granted, _ = await quota_add_extra_once(
+        user_id, reward, "subscribe_reward"
+    )
+    if not granted:
+        return False, "You have already claimed this reward."
+    reward_doc = _subscribe_doc(user_id)
     reward_doc["status"] = "completed"
     reward_doc["completed_at"] = int(time())
     reward_doc["reward"] = reward
-    await quota_add_extra(user_id, reward)
     await save_referral_user(user_id)
     return True, reward
 

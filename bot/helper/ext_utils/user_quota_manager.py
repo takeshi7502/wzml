@@ -1,11 +1,14 @@
 from asyncio import Lock
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from ... import LOGGER, sudo_users, user_data
 from ...core.config_manager import Config
-from .db_handler import database
+from ...core.tg_client import TgClient
+from .db_handler import SHARED_QUOTA_FIELDS, database
 from .status_utils import get_readable_time
 
 QUOTA_KEY = "USER_QUOTA"
@@ -55,7 +58,7 @@ def _next_reset_after():
 
 def _task_key(message):
     chat_id = getattr(getattr(message, "chat", None), "id", "pm")
-    return f"{chat_id}:{message.id}"
+    return f"{TgClient.PARTITION}:{chat_id}:{message.id}"
 
 
 def _is_bypass(user_id):
@@ -69,6 +72,64 @@ def _quota_doc(user_id):
     if not isinstance(quota.get("pending"), dict):
         quota["pending"] = {}
     return quota
+
+
+def _shared_payload(data):
+    return {key: data[key] for key in SHARED_QUOTA_FIELDS if key in data}
+
+
+async def refresh_shared_quota(user_id, migrate_local=True):
+    user_id = int(user_id)
+    local = user_data.setdefault(user_id, {})
+    shared = await database.get_shared_quota(user_id)
+    if shared is None:
+        if migrate_local and any(key in local for key in SHARED_QUOTA_FIELDS):
+            await database.initialize_shared_quota(user_id, local)
+            shared = await database.get_shared_quota(user_id) or _shared_payload(local)
+        else:
+            shared = {}
+    for key in SHARED_QUOTA_FIELDS:
+        if key in shared:
+            local[key] = shared[key]
+    _quota_doc(user_id)
+    return local
+
+
+async def hydrate_shared_quota():
+    cursor = await database.list_shared_quota()
+    if not cursor:
+        return 0
+    loaded = 0
+    async for row in cursor:
+        user_id = int(row.pop("_id"))
+        local = user_data.setdefault(user_id, {})
+        for key in SHARED_QUOTA_FIELDS:
+            if key in row:
+                local[key] = row[key]
+        loaded += 1
+    return loaded
+
+
+async def refresh_shared_quota_cache():
+    try:
+        await hydrate_shared_quota()
+    except Exception as e:
+        LOGGER.warning("Shared quota cache refresh failed: %s", e)
+
+
+@asynccontextmanager
+async def _quota_lock(user_id):
+    user_id = int(user_id)
+    async with _locks[user_id]:
+        owner = f"{TgClient.PARTITION or 'boot'}:{uuid4().hex}"
+        acquired = await database.acquire_quota_lock(user_id, owner)
+        if not acquired:
+            raise RuntimeError("Shared quota is busy. Please retry shortly.")
+        try:
+            await refresh_shared_quota(user_id)
+            yield
+        finally:
+            await database.release_quota_lock(user_id, owner)
 
 
 def _base_limit():
@@ -224,9 +285,10 @@ def _usage_text(user_id, quota, exceeded=False, user=None, show_upgrade=True):
 
 async def save_user_quota(user_id):
     try:
-        await database.update_user_data(user_id)
+        await database.save_shared_quota(user_id, user_data.get(user_id, {}))
     except Exception as e:
-        LOGGER.warning("User quota DB save failed for %s: %s", user_id, e)
+        LOGGER.warning("Shared user quota DB save failed for %s: %s", user_id, e)
+        raise
 
 
 async def quota_precheck(message, task_type="task", task_name=None, quota_cost=1):
@@ -236,7 +298,7 @@ async def quota_precheck(message, task_type="task", task_name=None, quota_cost=1
     user_id = user.id
     if _is_bypass(user_id):
         return None
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         _reset_if_needed(quota)
         try:
@@ -268,7 +330,7 @@ async def quota_confirm_task(listener):
     message = getattr(listener, "message", None)
     if not user_id or not message or not Config.USER_QUOTA_ENABLED or _is_bypass(user_id):
         return
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         _reset_if_needed(quota)
         key = _task_key(message)
@@ -297,7 +359,7 @@ async def quota_release_task(listener, reason=""):
     message = getattr(listener, "message", None)
     if not user_id or not message or _is_bypass(user_id):
         return
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         key = _task_key(message)
         if quota.get("pending", {}).pop(key, None) is not None:
@@ -306,22 +368,36 @@ async def quota_release_task(listener, reason=""):
 
 
 async def quota_get_usage(user_id, user=None, show_upgrade=True):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         _reset_if_needed(quota)
         return _usage_text(user_id, quota, user=user, show_upgrade=show_upgrade)
 
 
 async def quota_add_extra(user_id, amount):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         quota["extra_quota"] = max(0, int(quota.get("extra_quota", 0)) + int(amount))
         await save_user_quota(user_id)
         return _usage_text(user_id, quota)
 
 
+async def quota_add_extra_once(user_id, amount, grant_key):
+    async with _quota_lock(user_id):
+        data = user_data.setdefault(user_id, {})
+        grants = data.setdefault("QUOTA_REWARD_GRANTS", {})
+        if grant_key in grants:
+            return False, _usage_text(user_id, _quota_doc(user_id))
+        quota = _quota_doc(user_id)
+        amount = max(0, int(amount))
+        quota["extra_quota"] = int(quota.get("extra_quota", 0)) + amount
+        grants[grant_key] = {"amount": amount, "created_at": int(_now().timestamp())}
+        await save_user_quota(user_id)
+        return True, _usage_text(user_id, quota)
+
+
 async def quota_reset_today(user_id):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         quota["used_today"] = 0
         quota["pending"] = {}
@@ -331,7 +407,7 @@ async def quota_reset_today(user_id):
 
 
 async def quota_clear_pending(user_id):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         quota = _quota_doc(user_id)
         quota["pending"] = {}
         await save_user_quota(user_id)
@@ -340,18 +416,22 @@ async def quota_clear_pending(user_id):
 
 async def quota_clear_all_pending():
     cleared = 0
+    prefix = f"{TgClient.PARTITION}:"
     for user_id, data in list(user_data.items()):
         quota = data.get(QUOTA_KEY)
         if not isinstance(quota, dict) or not quota.get("pending"):
             continue
-        async with _locks[user_id]:
+        async with _quota_lock(user_id):
             quota = _quota_doc(user_id)
-            if quota.get("pending"):
-                quota["pending"] = {}
+            pending = quota.get("pending", {})
+            stale = [key for key in pending if key.startswith(prefix)]
+            if stale:
+                for key in stale:
+                    pending.pop(key, None)
                 await save_user_quota(user_id)
                 cleared += 1
     if cleared:
-        LOGGER.info("Cleared stale quota pending tasks for %s user(s) on startup", cleared)
+        LOGGER.info("Cleared this bot's stale quota holds for %s user(s)", cleared)
     return cleared
 
 
@@ -360,7 +440,7 @@ async def quota_set_vip_limit(user_id, limit):
     base_limit = _base_limit()
     if limit <= base_limit:
         return False, f"VIP daily limit must be greater than current Quota Free ({base_limit}/day)."
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         data = user_data.setdefault(user_id, {})
         data["VIP_DAILY_LIMIT"] = limit
         if not data.get("VIP_START_AT"):
@@ -370,7 +450,7 @@ async def quota_set_vip_limit(user_id, limit):
 
 
 async def quota_set_vip_days(user_id, days):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         data = user_data.setdefault(user_id, {})
         days = int(days)
         now_ts = int(_now().timestamp())
@@ -382,7 +462,7 @@ async def quota_set_vip_days(user_id, days):
 
 
 async def quota_enable_vip(user_id):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         data = user_data.setdefault(user_id, {})
         limit = int(data.get("VIP_DAILY_LIMIT") or 0)
         expire_at = data.get("VIP_EXPIRE_AT")
@@ -396,7 +476,7 @@ async def quota_enable_vip(user_id):
 
 
 async def quota_disable_vip(user_id):
-    async with _locks[user_id]:
+    async with _quota_lock(user_id):
         user_data.setdefault(user_id, {})["VIP_ENABLED"] = False
         await save_user_quota(user_id)
         return _usage_text(user_id, _quota_doc(user_id))

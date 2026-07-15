@@ -1,4 +1,6 @@
+from asyncio import sleep
 from importlib import import_module
+from time import time
 from uuid import uuid4
 
 from aiofiles import open as aiopen
@@ -26,6 +28,19 @@ def _part():
 
 def _new_uuid():
     return uuid4().hex
+
+
+SHARED_QUOTA_FIELDS = {
+    "USER_QUOTA",
+    "VIP_ENABLED",
+    "VIP_DAILY_LIMIT",
+    "VIP_START_AT",
+    "VIP_EXPIRE_AT",
+    "VIP_AUTH_REVOKED",
+    "REFERRAL",
+    "SUBSCRIBE_REWARD",
+    "QUOTA_REWARD_GRANTS",
+}
 
 
 class DbManager:
@@ -128,7 +143,13 @@ class DbManager:
             return
         data = user_data.get(user_id, {})
         data = data.copy()
-        for key in ("THUMBNAIL", "RCLONE_CONFIG", "TOKEN_PICKLE", "USER_COOKIE_FILE"):
+        for key in (
+            "THUMBNAIL",
+            "RCLONE_CONFIG",
+            "TOKEN_PICKLE",
+            "USER_COOKIE_FILE",
+            *SHARED_QUOTA_FIELDS,
+        ):
             data.pop(key, None)
         pipeline = [
             {
@@ -175,6 +196,80 @@ class DbManager:
             await self.db.users[_part()].update_one(
                 {"_id": user_id}, {"$unset": {key: ""}}, upsert=True
             )
+
+    async def get_shared_quota(self, user_id):
+        if self._return:
+            return None
+        return await self.db.shared_user_quota.find_one({"_id": int(user_id)})
+
+    async def list_shared_quota(self):
+        if self._return:
+            return []
+        return self.db.shared_user_quota.find({})
+
+    async def save_shared_quota(self, user_id, data):
+        if self._return:
+            return
+        payload = {key: data[key] for key in SHARED_QUOTA_FIELDS if key in data}
+        payload["updated_at"] = int(time())
+        await self.db.shared_user_quota.update_one(
+            {"_id": int(user_id)}, {"$set": payload}, upsert=True
+        )
+
+    async def initialize_shared_quota(self, user_id, data):
+        if self._return:
+            return
+        payload = {key: data[key] for key in SHARED_QUOTA_FIELDS if key in data}
+        payload["updated_at"] = int(time())
+        await self.db.shared_user_quota.update_one(
+            {"_id": int(user_id)}, {"$setOnInsert": payload}, upsert=True
+        )
+
+    async def ensure_shared_quota_policy(self, policy):
+        if self._return:
+            return True, policy
+        doc = await self.db.settings.sharedQuotaPolicy.find_one({"_id": "global"})
+        if doc is None:
+            await self.db.settings.sharedQuotaPolicy.update_one(
+                {"_id": "global"}, {"$setOnInsert": policy}, upsert=True
+            )
+            doc = await self.db.settings.sharedQuotaPolicy.find_one({"_id": "global"})
+        saved = {key: doc.get(key) for key in policy}
+        return saved == policy, saved
+
+    async def acquire_quota_lock(self, user_id, owner, ttl=30, timeout=15):
+        if self._return:
+            return True
+        deadline = time() + timeout
+        user_id = int(user_id)
+        while time() < deadline:
+            now = time()
+            try:
+                result = await self.db.shared_quota_locks.update_one(
+                    {
+                        "_id": user_id,
+                        "$or": [
+                            {"owner": owner},
+                            {"expires_at": {"$lte": now}},
+                            {"expires_at": {"$exists": False}},
+                        ],
+                    },
+                    {"$set": {"owner": owner, "expires_at": now + ttl}},
+                    upsert=True,
+                )
+                if result.matched_count or result.upserted_id is not None:
+                    return True
+            except PyMongoError:
+                pass
+            await sleep(0.1)
+        return False
+
+    async def release_quota_lock(self, user_id, owner):
+        if self._return:
+            return
+        await self.db.shared_quota_locks.delete_one(
+            {"_id": int(user_id), "owner": owner}
+        )
 
     async def rss_update_all(self):
         if self._return:

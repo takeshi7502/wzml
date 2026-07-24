@@ -527,8 +527,8 @@ async def update_status_message(sid, force=False):
                         f"Status with id: {sid} haven't been updated. Error: {message}"
                     )
                 return
-            status_dict[sid]["message"].text = text
-            status_dict[sid]["time"] = time()
+            message.text = text
+            status_dict[sid].update({"message": message, "time": time()})
 
 
 async def send_status_message(msg, user_id=0):

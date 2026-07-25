@@ -508,6 +508,25 @@ async def update_status_message(sid, force=False):
                     )
                     return
                 await delete_message(old_message)
+            elif (
+                not old_message.media
+                and len(text) <= 1024
+                and Config.USE_IMAGES
+                and Config.IMAGES
+            ):
+                message = await send_message(
+                    old_message,
+                    text,
+                    buttons,
+                    block=False,
+                    photo="IMAGES",
+                )
+                if not isinstance(message, Message):
+                    LOGGER.error(
+                        f"Status with id: {sid} couldn't restore its image. Error: {message}"
+                    )
+                    return
+                await delete_message(old_message)
             else:
                 message = await edit_message(
                     old_message,

@@ -42,7 +42,7 @@ class TgClient:
         kwargs["parse_mode"] = enums.ParseMode.HTML
         kwargs["in_memory"] = True
         for param, value in {
-            "max_concurrent_transmissions": 100,
+            "max_concurrent_transmissions": 16,
             "skip_updates": False,
         }.items():
             if param in signature(Client.__init__).parameters:
@@ -287,15 +287,23 @@ class TgClient:
             LOGGER.info("All Client(s) stopped")
 
     @classmethod
+    async def _restart_clients(cls, clients, batch_size=3):
+        for index in range(0, len(clients), batch_size):
+            await gather(
+                *(client.restart() for client in clients[index : index + batch_size]),
+                return_exceptions=True,
+            )
+
+    @classmethod
     async def reload(cls):
         async with cls._lock:
-            await cls.bot.restart()
+            clients = []
+            if cls.bot:
+                clients.append(cls.bot)
             if cls.user:
-                await cls.user.restart()
-            if cls.helper_bots:
-                await gather(*[h_bot.restart() for h_bot in cls.helper_bots.values()])
-            if cls.helper_users:
-                await gather(
-                    *[h_user.restart() for h_user in cls.helper_users.values()]
-                )
+                clients.append(cls.user)
+            clients.extend(cls.helper_bots.values())
+            clients.extend(cls.helper_users.values())
+            if clients:
+                await cls._restart_clients(clients)
             LOGGER.info("All Client(s) restarted")

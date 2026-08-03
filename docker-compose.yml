@@ -37,6 +37,10 @@ services:
       - "8080:8080"
     expose:
       - "8080"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   tunnel:
     build:

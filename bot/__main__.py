@@ -1,6 +1,9 @@
 # ruff: noqa: E402
 
 import faulthandler
+from asyncio import sleep
+from os import listdir
+from resource import getrlimit, RLIMIT_NOFILE
 from sys import stderr
 from logging import FileHandler, getLogger
 
@@ -28,6 +31,30 @@ for _h in getLogger().handlers:
 from .core.tg_client import TgClient
 
 _clean_task = None
+_fd_warn_level = 0
+
+
+async def monitor_file_descriptors():
+    global _fd_warn_level
+    soft_limit, _ = getrlimit(RLIMIT_NOFILE)
+    if soft_limit <= 0:
+        return
+    while True:
+        await sleep(300)
+        try:
+            used = len(listdir("/proc/self/fd"))
+        except Exception as e:
+            LOGGER.warning(f"Failed to inspect file descriptors: {e}")
+            continue
+        ratio = used / soft_limit
+        level = 2 if ratio >= 0.85 else 1 if ratio >= 0.7 else 0
+        if level and level >= _fd_warn_level:
+            LOGGER.warning(
+                f"High file descriptor usage: {used}/{soft_limit} ({ratio:.0%})"
+            )
+        elif level == 0 and _fd_warn_level:
+            LOGGER.info(f"File descriptor usage recovered: {used}/{soft_limit}")
+        _fd_warn_level = level
 
 
 async def main():
@@ -108,6 +135,7 @@ async def main():
     bot_loop.create_task(telegraph.create_account())
     bot_loop.create_task(rclone_serve_booter())
     bot_loop.create_task(search_images())
+    bot_loop.create_task(monitor_file_descriptors())
     start_quota_reset_notifier()
 
 
